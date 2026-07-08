@@ -1,0 +1,5 @@
+Flutter 是谷歌的跨平台框架，支持 Windows、Android、iOS、Web。
+Dart 是 Flutter 所用的编程语言，具有 AOT 编译特性，运行速度快。
+RAG 是检索增强生成，从本地知识库检索内容，再让大模型生成答案。
+ChromaDB 是轻量级向量数据库，支持本地持久化存储。
+常驻进程可以让 Python 只初始化一次模型，大幅提升速度。
