@@ -174,7 +174,7 @@ class _MyHomePageState extends State<MyHomePage> {
               return Tooltip(
                 message: model.ragService.isReady ? 'RAG 服务已连接' : 'RAG 服务未连接',
                 child: Container(
-                  margin: const EdgeInsets.only(right: 16),
+                  margin: const EdgeInsets.only(right: 30),
                   child: Icon(
                     Icons.circle,
                     color: model.ragService.isReady ? const Color(0xFF22C55E) : Colors.grey,
