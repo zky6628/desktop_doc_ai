@@ -62,15 +62,58 @@ class _MyHomePageState extends State<MyHomePage> {
     super.dispose();
   }
 
+  // ===================== 统一错误提示 =====================
+
+  void _showErrorSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.white),
+            const SizedBox(width: 10),
+            Expanded(child: Text(message, maxLines: 3, overflow: TextOverflow.ellipsis)),
+          ],
+        ),
+        backgroundColor: const Color(0xFFDC2626),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: '关闭',
+          textColor: Colors.white,
+          onPressed: () {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          },
+        ),
+      ),
+    );
+  }
+
+  void _showSuccessSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle_outline, color: Colors.white),
+            const SizedBox(width: 10),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: const Color(0xFF16A34A),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
   Future<void> _connectRagService() async {
     setState(() => _isConnecting = true);
     final model = context.read<DropFileModel>();
     final success = await model.initRagService(baseUrl: _urlController.text.trim());
 
     if (!success && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('RAG 服务连接失败: ${model.ragService.errorMessage}')),
-      );
+      _showErrorSnackBar(model.ragService.errorMessage ?? 'RAG 服务连接失败');
     }
 
     if (mounted) setState(() => _isConnecting = false);
@@ -108,15 +151,16 @@ class _MyHomePageState extends State<MyHomePage> {
 
     final model = context.read<DropFileModel>();
     if (!model.ragService.isReady) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('RAG 服务未连接，请先启动后端服务')),
-      );
+      _showErrorSnackBar('RAG 服务未连接，请先启动后端服务');
       return;
     }
 
     _queryController.clear();
     model.setQueryText('');
-    await model.askQuestion(query);
+    final error = await model.askQuestion(query);
+    if (error != null && mounted) {
+      _showErrorSnackBar(error);
+    }
     _scrollToBottom();
   }
 
@@ -125,24 +169,36 @@ class _MyHomePageState extends State<MyHomePage> {
     if (model.fileCount == 0) return;
 
     if (!model.ragService.isReady) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('RAG 服务未连接，请先启动后端服务')),
-      );
+      _showErrorSnackBar('RAG 服务未连接，请先启动后端服务');
       return;
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('正在添加文件到知识库...')),
+      const SnackBar(
+        content: Text('正在添加文件到知识库...'),
+        duration: Duration(seconds: 1),
+      ),
     );
 
-    final successCount = await model.addAllFilesToKnowledgeBase();
+    final (successCount, errors) = await model.addAllFilesToKnowledgeBase();
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('成功添加 $successCount / ${model.fileCount} 个文件到知识库'),
-        ),
-      );
+    if (!mounted) return;
+
+    if (errors.isEmpty) {
+      _showSuccessSnackBar('成功添加 $successCount 个文件到知识库');
+    } else if (successCount == 0) {
+      _showErrorSnackBar('所有文件添加失败:\n${errors.take(3).join('\n')}');
+    } else {
+      // 部分成功
+      _showSuccessSnackBar('成功添加 $successCount / ${model.fileCount} 个文件');
+      if (errors.isNotEmpty) {
+        // 延迟显示失败详情，避免覆盖成功提示
+        Future.delayed(const Duration(milliseconds: 2200), () {
+          if (mounted) {
+            _showErrorSnackBar('部分文件添加失败:\n${errors.take(3).join('\n')}');
+          }
+        });
+      }
     }
   }
 

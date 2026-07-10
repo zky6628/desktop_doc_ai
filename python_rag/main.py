@@ -12,12 +12,72 @@ import sys
 import io
 # 导入 JSON 模块
 import json
+# 导入异常类型
+from pathlib import Path
 
 # 导入 FastAPI 相关模块
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
+
+
+# ===================== 统一错误码定义 =====================
+
+class ErrorCode:
+    """API 错误码常量"""
+    FILE_NOT_FOUND = "FILE_NOT_FOUND"
+    UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
+    EMPTY_FILE = "EMPTY_FILE"
+    API_ERROR = "API_ERROR"
+    DB_ERROR = "DB_ERROR"
+    TIMEOUT = "TIMEOUT"
+    UNKNOWN = "UNKNOWN"
+    INVALID_PARAM = "INVALID_PARAM"
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
+
+
+# ===================== 统一响应格式 =====================
+
+def make_response(
+    success: bool,
+    data: Any = None,
+    error_code: Optional[str] = None,
+    error_msg: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    构造统一 API 响应格式
+    :param success: 是否成功
+    :param data: 成功时的数据
+    :param error_code: 错误码（失败时必填）
+    :param error_msg: 错误信息（失败时必填）
+    :return: 统一格式的字典
+    """
+    response = {"success": success}
+    if success:
+        response["data"] = data
+        response["error"] = None
+    else:
+        response["data"] = None
+        response["error"] = {
+            "code": error_code or ErrorCode.UNKNOWN,
+            "message": error_msg or "未知错误"
+        }
+    return response
+
+
+def success_response(data: Any = None) -> Dict[str, Any]:
+    """构造成功响应"""
+    return make_response(success=True, data=data)
+
+
+def error_response(
+    error_code: str = ErrorCode.UNKNOWN,
+    error_msg: str = "未知错误"
+) -> Dict[str, Any]:
+    """构造失败响应"""
+    return make_response(success=False, error_code=error_code, error_msg=error_msg)
 
 # 导入 dotenv 模块，用于从 .env 文件加载环境变量
 from dotenv import load_dotenv
@@ -224,9 +284,37 @@ def load_knowledge_file(file_path: str):
     加载并切分知识库文本文件
     :param file_path: 知识库文件路径
     :return: 切分后的 Document 对象列表
+    :raises: FileNotFoundError, ValueError, Exception
     """
-    loader = TextLoader(file_path, encoding="utf-8")
-    docs = loader.load()
+    # 检查文件是否存在
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+    
+    # 检查文件是否为空
+    if os.path.getsize(file_path) == 0:
+        raise ValueError("文件内容为空")
+    
+    # 检查文件格式（目前仅支持纯文本）
+    ext = Path(file_path).suffix.lower()
+    if ext not in ['.txt', '.md', '.py', '.java', '.js', '.json', '.csv', '.log', '']:
+        raise ValueError(f"不支持的文件格式: {ext}")
+    
+    try:
+        loader = TextLoader(file_path, encoding="utf-8")
+        docs = loader.load()
+    except UnicodeDecodeError:
+        # 尝试 gbk 编码
+        try:
+            loader = TextLoader(file_path, encoding="gbk")
+            docs = loader.load()
+        except Exception:
+            raise ValueError("无法解析文件编码，请使用 UTF-8 或 GBK 编码的文本文件")
+    except Exception as e:
+        raise ValueError(f"文件读取失败: {str(e)}")
+    
+    # 检查文档内容是否为空
+    if not docs or all(len(doc.page_content.strip()) == 0 for doc in docs):
+        raise ValueError("文件内容为空")
     
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=300,
@@ -235,6 +323,9 @@ def load_knowledge_file(file_path: str):
     )
     
     splits = splitter.split_documents(docs)
+    if not splits:
+        raise ValueError("文件内容切分后为空")
+    
     return splits
 
 def build_knowledge_base(db_manager: ChromaDBManager, knowledge_file: str):
@@ -371,28 +462,56 @@ app.add_middleware(
 
 # ===================== API 路由 =====================
 
+# ===================== 异常处理辅助函数 =====================
+
+def _handle_exception(e: Exception) -> Dict[str, Any]:
+    """
+    将异常转换为统一错误响应
+    """
+    if isinstance(e, FileNotFoundError):
+        return error_response(ErrorCode.FILE_NOT_FOUND, str(e))
+    elif isinstance(e, ValueError):
+        msg = str(e).lower()
+        if "不支持的文件格式" in str(e) or "unsupported" in msg:
+            return error_response(ErrorCode.UNSUPPORTED_FORMAT, str(e))
+        elif "空" in str(e) or "empty" in msg:
+            return error_response(ErrorCode.EMPTY_FILE, str(e))
+        else:
+            return error_response(ErrorCode.INVALID_PARAM, str(e))
+    elif isinstance(e, TimeoutError):
+        return error_response(ErrorCode.TIMEOUT, "处理超时，请稍后重试")
+    elif "embedding" in str(e).lower() or "qwen" in str(e).lower() or "dashscope" in str(e).lower():
+        return error_response(ErrorCode.API_ERROR, f"AI 接口调用失败: {str(e)}")
+    elif "chroma" in str(e).lower() or "database" in str(e).lower() or "db" in str(e).lower():
+        return error_response(ErrorCode.DB_ERROR, f"数据库错误: {str(e)}")
+    else:
+        return error_response(ErrorCode.UNKNOWN, f"{type(e).__name__}: {str(e)}")
+
+
+# ===================== API 路由 =====================
+
 @app.get("/", tags=["系统"])
 async def root():
     """根路径，返回服务信息"""
-    return {
+    return success_response({
         "service": "RAG Document AI API",
         "version": "1.0.0",
         "status": "running"
-    }
+    })
 
 @app.get("/ping", tags=["系统"])
 async def ping():
     """健康检查接口"""
-    return {"status": "pong"}
+    return success_response({"status": "pong"})
 
 @app.get("/count", tags=["知识库管理"])
 async def get_count():
     """获取知识库文档总数"""
     try:
         total = db_manager.count()
-        return {"count": total}
+        return success_response({"count": total})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return _handle_exception(e)
 
 @app.post("/query", tags=["RAG 问答"])
 async def query_rag(request: QueryRequest):
@@ -401,19 +520,17 @@ async def query_rag(request: QueryRequest):
     传入问题，返回答案和参考来源
     """
     try:
-        if not request.question.strip():
-            raise HTTPException(status_code=400, detail="问题不能为空")
+        if not request.question or not request.question.strip():
+            return error_response(ErrorCode.INVALID_PARAM, "问题不能为空")
         
         answer, source_docs = run_rag_with_sources(request.question)
         
-        return {
+        return success_response({
             "answer": answer,
             "sources": [doc.page_content for doc in source_docs]
-        }
-    except HTTPException:
-        raise
+        })
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.post("/search", tags=["知识库管理"])
 async def search_docs(request: SearchRequest):
@@ -422,8 +539,8 @@ async def search_docs(request: SearchRequest):
     传入查询文本，返回最相关的文档片段
     """
     try:
-        if not request.query.strip():
-            raise HTTPException(status_code=400, detail="查询文本不能为空")
+        if not request.query or not request.query.strip():
+            return error_response(ErrorCode.INVALID_PARAM, "查询文本不能为空")
         
         docs_with_scores = db_manager.similarity_search_with_score(
             request.query, k=request.k
@@ -438,11 +555,9 @@ async def search_docs(request: SearchRequest):
             for doc, score in docs_with_scores
         ]
         
-        return {"results": results}
-    except HTTPException:
-        raise
+        return success_response({"results": results})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.post("/add_file", tags=["知识库管理"])
 async def add_file(request: AddFileRequest):
@@ -453,10 +568,10 @@ async def add_file(request: AddFileRequest):
     try:
         file_path = request.file_path
         if not file_path:
-            raise HTTPException(status_code=400, detail="文件路径不能为空")
+            return error_response(ErrorCode.INVALID_PARAM, "文件路径不能为空")
         
         if not os.path.exists(file_path):
-            raise HTTPException(status_code=400, detail=f"文件不存在: {file_path}")
+            return error_response(ErrorCode.FILE_NOT_FOUND, f"文件不存在: {file_path}")
         
         # 加载并切分文件
         splits = load_knowledge_file(file_path)
@@ -470,15 +585,13 @@ async def add_file(request: AddFileRequest):
         # 添加到向量库
         ids = db_manager.add_documents(splits)
         
-        return {
+        return success_response({
             "ids": ids,
             "chunk_count": len(splits),
             "file_name": file_name
-        }
-    except HTTPException:
-        raise
+        })
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.post("/upload_file", tags=["知识库管理"])
 async def upload_file(file: UploadFile = File(...)):
@@ -504,15 +617,13 @@ async def upload_file(file: UploadFile = File(...)):
         # 添加到向量库
         ids = db_manager.add_documents(splits)
         
-        return {
+        return success_response({
             "ids": ids,
             "chunk_count": len(splits),
             "file_name": file.filename
-        }
-    except HTTPException:
-        raise
+        })
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.post("/add_texts", tags=["知识库管理"])
 async def add_texts(request: AddTextsRequest):
@@ -521,14 +632,12 @@ async def add_texts(request: AddTextsRequest):
     """
     try:
         if not request.texts:
-            raise HTTPException(status_code=400, detail="文本列表不能为空")
+            return error_response(ErrorCode.INVALID_PARAM, "文本列表不能为空")
         
         ids = db_manager.add_texts(request.texts, request.metadatas)
-        return {"ids": ids, "count": len(ids)}
-    except HTTPException:
-        raise
+        return success_response({"ids": ids, "count": len(ids)})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.post("/delete_by_ids", tags=["知识库管理"])
 async def delete_by_ids(request: DeleteByIdsRequest):
@@ -537,14 +646,12 @@ async def delete_by_ids(request: DeleteByIdsRequest):
     """
     try:
         if not request.ids:
-            raise HTTPException(status_code=400, detail="ID列表不能为空")
+            return error_response(ErrorCode.INVALID_PARAM, "ID列表不能为空")
         
         db_manager.delete_by_ids(request.ids)
-        return {"status": "success", "deleted_count": len(request.ids)}
-    except HTTPException:
-        raise
+        return success_response({"status": "success", "deleted_count": len(request.ids)})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.post("/delete_all", tags=["知识库管理"])
 async def delete_all():
@@ -554,9 +661,9 @@ async def delete_all():
     try:
         count_before = db_manager.count()
         db_manager.delete_all()
-        return {"status": "success", "deleted_count": count_before}
+        return success_response({"status": "success", "deleted_count": count_before})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.post("/update_text", tags=["知识库管理"])
 async def update_text(request: UpdateTextRequest):
@@ -565,16 +672,14 @@ async def update_text(request: UpdateTextRequest):
     """
     try:
         if not request.id:
-            raise HTTPException(status_code=400, detail="文档ID不能为空")
+            return error_response(ErrorCode.INVALID_PARAM, "文档ID不能为空")
         if not request.text:
-            raise HTTPException(status_code=400, detail="文本内容不能为空")
+            return error_response(ErrorCode.INVALID_PARAM, "文本内容不能为空")
         
         db_manager.update_text(request.id, request.text, request.metadata)
-        return {"status": "success", "id": request.id}
-    except HTTPException:
-        raise
+        return success_response({"status": "success", "id": request.id})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.get("/get_all", tags=["知识库管理"])
 async def get_all():
@@ -583,13 +688,13 @@ async def get_all():
     """
     try:
         result = db_manager.get_all()
-        return {
+        return success_response({
             "ids": result["ids"],
             "documents": result["documents"],
             "metadatas": result["metadatas"]
-        }
+        })
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 @app.post("/reload_knowledge", tags=["知识库管理"])
 async def reload_knowledge():
@@ -601,13 +706,11 @@ async def reload_knowledge():
         if os.path.exists(DOC_PATH):
             splits = load_knowledge_file(DOC_PATH)
             db_manager.add_documents(splits)
-            return {"status": "success", "chunk_count": len(splits)}
+            return success_response({"status": "success", "chunk_count": len(splits)})
         else:
-            raise HTTPException(status_code=400, detail=f"知识库文件不存在: {DOC_PATH}")
-    except HTTPException:
-        raise
+            return error_response(ErrorCode.FILE_NOT_FOUND, f"知识库文件不存在: {DOC_PATH}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        return _handle_exception(e)
 
 # ===================== 服务启动入口 =====================
 

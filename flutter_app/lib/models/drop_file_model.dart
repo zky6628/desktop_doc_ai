@@ -66,36 +66,41 @@ class DropFileModel extends ChangeNotifier {
 
   // ===================== 文件添加到知识库 =====================
 
-  Future<bool> addFileToKnowledgeBase(String filePath) async {
+  /// 将单个文件添加到知识库，返回用户友好的结果
+  /// [filePath] 文件路径
+  /// 返回 null 表示成功，否则返回错误文案
+  Future<String?> addFileToKnowledgeBase(String filePath) async {
     _fileStatus[filePath] = '处理中...';
     notifyListeners();
 
-    try {
-      final result = await _ragService.addFile(filePath);
+    final result = await _ragService.addFile(filePath);
 
-      if (result != null && !result.containsKey('error')) {
-        _fileStatus[filePath] = '已添加';
-        notifyListeners();
-        return true;
-      } else {
-        _fileStatus[filePath] = '失败: ${result?['error'] ?? '未知错误'}';
-        notifyListeners();
-        return false;
-      }
-    } catch (e) {
-      _fileStatus[filePath] = '失败: $e';
+    if (result.isSuccess) {
+      _fileStatus[filePath] = '已添加';
       notifyListeners();
-      return false;
+      return null;
+    } else {
+      final friendlyMsg = result.friendlyErrorMessage;
+      _fileStatus[filePath] = '失败: $friendlyMsg';
+      notifyListeners();
+      return friendlyMsg;
     }
   }
 
-  Future<int> addAllFilesToKnowledgeBase() async {
+  /// 批量添加所有文件到知识库
+  /// 返回 (成功数量, 失败列表)
+  Future<(int, List<String>)> addAllFilesToKnowledgeBase() async {
     int successCount = 0;
+    final List<String> errors = [];
     for (final file in _files) {
-      final success = await addFileToKnowledgeBase(file.path);
-      if (success) successCount++;
+      final error = await addFileToKnowledgeBase(file.path);
+      if (error == null) {
+        successCount++;
+      } else {
+        errors.add('${file.name}: $error');
+      }
     }
-    return successCount;
+    return (successCount, errors);
   }
 
   // ===================== RAG 问答 =====================
@@ -105,7 +110,9 @@ class DropFileModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> askQuestion(String question) async {
+  /// 提问并获取回答
+  /// 返回 null 表示成功，否则返回用户友好的错误文案
+  Future<String?> askQuestion(String question) async {
     _chatHistory.add(ChatMessage(
       id: 'msg_${_msgIdCounter++}',
       type: MessageType.user,
@@ -118,48 +125,35 @@ class DropFileModel extends ChangeNotifier {
     _sources = [];
     notifyListeners();
 
-    try {
-      final result = await _ragService.query(question);
+    final result = await _ragService.query(question);
 
-      if (result != null) {
-        if (result.containsKey('error')) {
-          _errorMessage = result['error'] as String;
-          _chatHistory.add(ChatMessage(
-            id: 'msg_${_msgIdCounter++}',
-            type: MessageType.assistant,
-            content: '查询出错: ${result['error']}',
-          ));
-        } else {
-          _answer = result['answer'] as String?;
-          final sourcesList = result['sources'] as List<dynamic>?;
-          if (sourcesList != null) {
-            _sources = sourcesList.map((e) => e.toString()).toList();
-          }
-          _chatHistory.add(ChatMessage(
-            id: 'msg_${_msgIdCounter++}',
-            type: MessageType.assistant,
-            content: _answer ?? '(无回答)',
-            sources: _sources,
-          ));
-        }
-      } else {
-        _errorMessage = '查询失败，无返回结果';
-        _chatHistory.add(ChatMessage(
-          id: 'msg_${_msgIdCounter++}',
-          type: MessageType.assistant,
-          content: '查询失败，无返回结果',
-        ));
+    if (result.isSuccess) {
+      final data = result.data ?? {};
+      _answer = data['answer'] as String?;
+      final sourcesList = data['sources'] as List<dynamic>?;
+      if (sourcesList != null) {
+        _sources = sourcesList.map((e) => e.toString()).toList();
       }
-    } catch (e) {
-      _errorMessage = '查询异常: $e';
       _chatHistory.add(ChatMessage(
         id: 'msg_${_msgIdCounter++}',
         type: MessageType.assistant,
-        content: '查询异常: $e',
+        content: _answer ?? '(无回答)',
+        sources: _sources,
       ));
-    } finally {
       _isLoading = false;
       notifyListeners();
+      return null;
+    } else {
+      final friendlyMsg = result.friendlyErrorMessage;
+      _errorMessage = friendlyMsg;
+      _chatHistory.add(ChatMessage(
+        id: 'msg_${_msgIdCounter++}',
+        type: MessageType.assistant,
+        content: '服务异常: $friendlyMsg',
+      ));
+      _isLoading = false;
+      notifyListeners();
+      return friendlyMsg;
     }
   }
 
@@ -182,14 +176,14 @@ class DropFileModel extends ChangeNotifier {
 
   Future<int?> getKnowledgeBaseCount() async {
     final result = await _ragService.getCount();
-    if (result != null && !result.containsKey('error')) {
-      return result['count'] as int?;
+    if (result.isSuccess) {
+      return result.data?['count'] as int?;
     }
     return null;
   }
 
   Future<bool> clearKnowledgeBase() async {
     final result = await _ragService.deleteAll();
-    return result != null && !result.containsKey('error');
+    return result.isSuccess;
   }
 }

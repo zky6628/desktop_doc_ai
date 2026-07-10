@@ -1,12 +1,82 @@
 // 导入 Flutter 基础包
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 // 导入 HTTP 请求包
 import 'package:http/http.dart' as http;
 
+/// API 错误码定义（与 Python 后端保持一致）
+class ApiErrorCode {
+  static const String fileNotFound = 'FILE_NOT_FOUND';
+  static const String unsupportedFormat = 'UNSUPPORTED_FORMAT';
+  static const String emptyFile = 'EMPTY_FILE';
+  static const String apiError = 'API_ERROR';
+  static const String dbError = 'DB_ERROR';
+  static const String timeout = 'TIMEOUT';
+  static const String unknown = 'UNKNOWN';
+  static const String invalidParam = 'INVALID_PARAM';
+  static const String serviceUnavailable = 'SERVICE_UNAVAILABLE';
+}
+
+/// API 响应结果封装
+class ApiResult<T> {
+  final bool success;
+  final T? data;
+  final String? errorCode;
+  final String? errorMessage;
+
+  bool get isSuccess => success;
+  bool get isError => !success;
+
+  ApiResult._({
+    required this.success,
+    this.data,
+    this.errorCode,
+    this.errorMessage,
+  });
+
+  factory ApiResult.success(T data) {
+    return ApiResult._(success: true, data: data);
+  }
+
+  factory ApiResult.error(String code, String message) {
+    return ApiResult._(
+      success: false,
+      errorCode: code,
+      errorMessage: message,
+    );
+  }
+
+  /// 获取用户友好的错误文案
+  String get friendlyErrorMessage {
+    if (errorMessage == null || errorMessage!.isEmpty) {
+      return '操作失败，请稍后重试';
+    }
+    switch (errorCode) {
+      case ApiErrorCode.fileNotFound:
+        return '文件不存在，请检查文件路径';
+      case ApiErrorCode.unsupportedFormat:
+        return '暂不支持该文件格式，请上传文本文件';
+      case ApiErrorCode.emptyFile:
+        return '文件内容为空，请检查文件';
+      case ApiErrorCode.apiError:
+        return 'AI 服务暂不可用，请稍后重试';
+      case ApiErrorCode.dbError:
+        return '数据库操作失败，请稍后重试';
+      case ApiErrorCode.timeout:
+        return '请求超时，请稍后重试';
+      case ApiErrorCode.invalidParam:
+        return errorMessage!;
+      case ApiErrorCode.serviceUnavailable:
+        return '服务暂不可用，请检查后端服务是否启动';
+      default:
+        return '操作失败: $errorMessage';
+    }
+  }
+}
+
 /// RAG 服务类
 /// 通过 HTTP 协议与 Python FastAPI 后端通信
-/// 替代原有的 stdin/stdout 进程通信方式
 class RagService extends ChangeNotifier {
   // 后端服务基础地址
   String _baseUrl = 'http://127.0.0.1:8000';
@@ -41,8 +111,8 @@ class RagService extends ChangeNotifier {
       debugPrint('正在连接 RAG API 服务: $_baseUrl');
 
       // 发送 ping 请求测试连接
-      final pingResult = await ping();
-      if (pingResult != null && pingResult['status'] == 'pong') {
+      final result = await ping();
+      if (result.isSuccess && result.data != null && result.data!['status'] == 'pong') {
         _isReady = true;
         _errorMessage = null;
         debugPrint('RAG API 服务连接成功！');
@@ -50,7 +120,7 @@ class RagService extends ChangeNotifier {
         return true;
       } else {
         _isReady = false;
-        _errorMessage = '服务响应异常';
+        _errorMessage = result.errorMessage ?? '服务响应异常';
         notifyListeners();
         return false;
       }
@@ -65,8 +135,8 @@ class RagService extends ChangeNotifier {
 
   /// 发送 HTTP GET 请求
   /// [endpoint] 接口路径
-  /// 返回 JSON 响应的 Map
-  Future<Map<String, dynamic>?> _get(String endpoint) async {
+  /// 返回解析后的 ApiResult
+  Future<ApiResult<Map<String, dynamic>>> _get(String endpoint) async {
     try {
       final url = Uri.parse('$_baseUrl$endpoint');
       final response = await http.get(
@@ -75,17 +145,29 @@ class RagService extends ChangeNotifier {
       ).timeout(const Duration(seconds: 30));
 
       return _parseResponse(response);
-    } catch (e) {
+    } on SocketException catch (e) {
+      debugPrint('GET 请求网络错误 ($endpoint): $e');
+      return ApiResult.error(
+        ApiErrorCode.serviceUnavailable,
+        '无法连接到后端服务',
+      );
+    } on FormatException catch (e) {
+      debugPrint('GET 请求响应格式错误 ($endpoint): $e');
+      return ApiResult.error(ApiErrorCode.unknown, '响应解析失败');
+    } on Exception catch (e) {
       debugPrint('GET 请求失败 ($endpoint): $e');
-      return {'error': e.toString()};
+      return ApiResult.error(ApiErrorCode.unknown, e.toString());
     }
   }
 
   /// 发送 HTTP POST 请求
   /// [endpoint] 接口路径
   /// [body] 请求体（JSON 可序列化对象）
-  /// 返回 JSON 响应的 Map
-  Future<Map<String, dynamic>?> _post(String endpoint, Map<String, dynamic> body) async {
+  /// 返回解析后的 ApiResult
+  Future<ApiResult<Map<String, dynamic>>> _post(
+    String endpoint,
+    Map<String, dynamic> body,
+  ) async {
     try {
       final url = Uri.parse('$_baseUrl$endpoint');
       final response = await http.post(
@@ -95,66 +177,101 @@ class RagService extends ChangeNotifier {
       ).timeout(const Duration(seconds: 30));
 
       return _parseResponse(response);
-    } catch (e) {
+    } on SocketException catch (e) {
+      debugPrint('POST 请求网络错误 ($endpoint): $e');
+      return ApiResult.error(
+        ApiErrorCode.serviceUnavailable,
+        '无法连接到后端服务',
+      );
+    } on FormatException catch (e) {
+      debugPrint('POST 请求响应格式错误 ($endpoint): $e');
+      return ApiResult.error(ApiErrorCode.unknown, '响应解析失败');
+    } on Exception catch (e) {
       debugPrint('POST 请求失败 ($endpoint): $e');
-      return {'error': e.toString()};
+      return ApiResult.error(ApiErrorCode.unknown, e.toString());
     }
   }
 
   /// 解析 HTTP 响应
-  Map<String, dynamic>? _parseResponse(http.Response response) {
+  ApiResult<Map<String, dynamic>> _parseResponse(http.Response response) {
     try {
       // 解析响应体
       final Map<String, dynamic> data = jsonDecode(response.body);
 
-      // 检查状态码
+      // 优先识别统一响应格式: {success, data, error}
+      if (data.containsKey('success')) {
+        final bool success = data['success'] as bool;
+        if (success) {
+          final responseData = data['data'];
+          if (responseData is Map<String, dynamic>) {
+            return ApiResult.success(responseData);
+          } else {
+            // 将非 Map 数据包装为 Map
+            return ApiResult.success({'value': responseData});
+          }
+        } else {
+          final error = data['error'];
+          if (error is Map<String, dynamic>) {
+            return ApiResult.error(
+              error['code'] as String? ?? ApiErrorCode.unknown,
+              error['message'] as String? ?? '未知错误',
+            );
+          } else {
+            return ApiResult.error(ApiErrorCode.unknown, error?.toString() ?? '未知错误');
+          }
+        }
+      }
+
+      // 兼容旧格式：HTTP 状态码判断
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        return data;
+        return ApiResult.success(data);
       } else {
-        // FastAPI 的错误响应格式通常是 {"detail": "..."}
         final errorDetail = data['detail'] ?? 'HTTP ${response.statusCode}';
-        return {'error': errorDetail};
+        return ApiResult.error(ApiErrorCode.unknown, errorDetail.toString());
       }
     } catch (e) {
       debugPrint('响应解析失败: $e');
-      return {'error': '响应解析失败: $e'};
+      return ApiResult.error(ApiErrorCode.unknown, '响应解析失败: $e');
     }
   }
 
   // ========== 封装的便捷方法 ==========
 
   /// 健康检查
-  Future<Map<String, dynamic>?> ping() async {
+  Future<ApiResult<Map<String, dynamic>>> ping() async {
     return _get('/ping');
   }
 
   /// 添加文件到知识库（通过本地文件路径）
   /// [filePath] 文件的绝对路径
-  Future<Map<String, dynamic>?> addFile(String filePath) async {
+  Future<ApiResult<Map<String, dynamic>>> addFile(String filePath) async {
     return _post('/add_file', {'file_path': filePath});
   }
 
   /// RAG 问答查询
   /// [question] 用户问题
   /// 返回包含 answer 和 sources 的 Map
-  Future<Map<String, dynamic>?> query(String question) async {
+  Future<ApiResult<Map<String, dynamic>>> query(String question) async {
     return _post('/query', {'question': question});
   }
 
   /// 相似度检索
   /// [queryText] 查询文本
   /// [k] 返回结果数量
-  Future<Map<String, dynamic>?> search(String queryText, {int k = 3}) async {
+  Future<ApiResult<Map<String, dynamic>>> search(
+    String queryText, {
+    int k = 3,
+  }) async {
     return _post('/search', {'query': queryText, 'k': k});
   }
 
   /// 获取文档总数
-  Future<Map<String, dynamic>?> getCount() async {
+  Future<ApiResult<Map<String, dynamic>>> getCount() async {
     return _get('/count');
   }
 
   /// 清空知识库
-  Future<Map<String, dynamic>?> deleteAll() async {
+  Future<ApiResult<Map<String, dynamic>>> deleteAll() async {
     return _post('/delete_all', {});
   }
 
