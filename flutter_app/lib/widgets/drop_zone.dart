@@ -115,7 +115,7 @@ class _DropZoneState extends State<DropZone> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '支持 PDF / TXT / DOCX 格式，可多文件拖拽',
+                  '支持 PDF / TXT / DOCX / 图片，可多文件拖拽',
                   style: TextStyle(
                     fontSize: 11,
                     color: _isDragging

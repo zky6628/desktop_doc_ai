@@ -7,7 +7,10 @@ class FileHandler {
   FileHandler._();
 
   /// 支持的文件扩展名列表
-  static const List<String> supportedExtensions = ['.pdf', '.txt', '.docx'];
+  static const List<String> supportedExtensions = [
+    '.pdf', '.txt', '.docx',
+    '.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff',
+  ];
 
   /// 获取文件扩展名（小写，含点号）
   static String getFileExtension(String fileName) {
@@ -21,7 +24,7 @@ class FileHandler {
     return supportedExtensions.contains(getFileExtension(fileName));
   }
 
-  /// 获取文件类型标签（如 PDF / TXT / DOCX）
+  /// 获取文件类型标签（如 PDF / TXT / DOCX / IMG）
   static String getFileTypeLabel(String fileName) {
     final ext = getFileExtension(fileName);
     switch (ext) {
@@ -31,6 +34,13 @@ class FileHandler {
         return 'TXT';
       case '.docx':
         return 'DOCX';
+      case '.jpg':
+      case '.jpeg':
+      case '.png':
+      case '.bmp':
+      case '.webp':
+      case '.tiff':
+        return 'IMG';
       default:
         return '未知';
     }
@@ -46,6 +56,13 @@ class FileHandler {
         return Icons.description;
       case '.docx':
         return Icons.article;
+      case '.jpg':
+      case '.jpeg':
+      case '.png':
+      case '.bmp':
+      case '.webp':
+      case '.tiff':
+        return Icons.image;
       default:
         return Icons.insert_drive_file;
     }
@@ -61,6 +78,13 @@ class FileHandler {
         return const Color(0xFF3B82F6); // 蓝色
       case '.docx':
         return const Color(0xFF2563EB); // 深蓝色
+      case '.jpg':
+      case '.jpeg':
+      case '.png':
+      case '.bmp':
+      case '.webp':
+      case '.tiff':
+        return const Color(0xFF9333EA); // 紫色
       default:
         return const Color(0xFF6B7280); // 灰色
     }

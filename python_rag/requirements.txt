@@ -29,6 +29,10 @@ txtai>=9.6.0
 python-docx>=1.2.0
 # pypdf PDF 文件解析
 pypdf>=6.10.0
+# rapidocr 图片 OCR 文字识别（基于 ONNX Runtime，无需 paddlepaddle，支持中英文）
+rapidocr-onnxruntime>=1.2.3
+# Pillow 图片处理
+Pillow>=12.2.0
 
 # ===================== 工具库 =====================
 # 环境变量加载

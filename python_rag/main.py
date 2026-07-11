@@ -15,6 +15,11 @@ import json
 # 导入异常类型
 from pathlib import Path
 
+# 将脚本所在目录添加到 sys.path，确保同目录模块可正确导入
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 # 导入 FastAPI 相关模块
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -117,8 +122,6 @@ from langchain_core.output_parsers import StrOutputParser
 
 # ===================== 环境变量与路径配置 =====================
 
-# 获取当前脚本所在目录的绝对路径，确保路径不随运行目录变化
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ChromaDB 向量数据库持久化存储目录
 CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
 # 知识库文本文件路径
