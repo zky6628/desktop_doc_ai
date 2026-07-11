@@ -56,7 +56,7 @@ class ApiResult<T> {
       case ApiErrorCode.fileNotFound:
         return '文件不存在，请检查文件路径';
       case ApiErrorCode.unsupportedFormat:
-        return '暂不支持该文件格式，请上传文本文件';
+        return '暂不支持该文件格式，请上传 PDF / TXT / DOCX 文件';
       case ApiErrorCode.emptyFile:
         return '文件内容为空，请检查文件';
       case ApiErrorCode.apiError:

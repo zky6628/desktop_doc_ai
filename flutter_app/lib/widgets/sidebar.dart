@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/colors.dart';
 import '../models/drop_file_model.dart';
+import '../utils/file_handler.dart';
 
 /// 侧边栏组件
 /// 宽度 220px，左侧固定，包含"文件列表"和"对话历史"两个 Tab 切换
@@ -203,14 +204,41 @@ class _SidebarState extends State<Sidebar> {
     if (status == '处理中...') statusColor = AppColors.warning;
     if (status != null && status.startsWith('失败')) statusColor = AppColors.error;
 
+    final typeIcon = FileHandler.getFileTypeIcon(name);
+    final typeColor = FileHandler.getFileTypeColor(name);
+    final typeLabel = FileHandler.getFileTypeLabel(name);
+
     return ListTile(
       dense: true,
       contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-      leading: const Icon(Icons.insert_drive_file, size: 18, color: AppColors.textSecondary),
-      title: Text(
-        name,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 12),
+      leading: Icon(typeIcon, size: 18, color: typeColor),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              name,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+            decoration: BoxDecoration(
+              color: typeColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(3),
+              border: Border.all(color: typeColor.withValues(alpha: 0.3), width: 0.5),
+            ),
+            child: Text(
+              typeLabel,
+              style: TextStyle(
+                fontSize: 9,
+                fontWeight: FontWeight.w600,
+                color: typeColor,
+              ),
+            ),
+          ),
+        ],
       ),
       subtitle: status != null
           ? Text(status, style: TextStyle(fontSize: 10, color: statusColor))

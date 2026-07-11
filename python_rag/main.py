@@ -97,12 +97,17 @@ from dashscope import TextEmbedding
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 # 导入 LangChain 的文档加载器，用于加载文本文件
 from langchain_community.document_loaders import TextLoader
+# 导入 LangChain 的 Document 类，用于构造文档对象
+from langchain_core.documents import Document
 # 导入 LangChain 的 Chroma 向量数据库封装
 from langchain_chroma import Chroma
 # 导入 LangChain 的 Embeddings 基类，用于自定义 Embedding
 from langchain_core.embeddings import Embeddings
 # 导入 LangChain 的 Qwen Chat 模型封装（通过 OpenAI 兼容接口）
 from langchain_openai import ChatOpenAI
+
+# 导入自定义文件解析器（支持 TXT/DOCX/PDF）
+from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
 # 导入 LangChain 的提示词模板，用于构建对话提示
 from langchain_core.prompts import ChatPromptTemplate
 # 导入 LangChain 的可运行组件，用于构建 RAG 管道
@@ -281,7 +286,8 @@ class ChromaDBManager:
 
 def load_knowledge_file(file_path: str):
     """
-    加载并切分知识库文本文件
+    加载并切分知识库文件
+    支持 TXT/DOCX/PDF（通过 file_parser 解析）以及其他纯文本格式（通过 TextLoader）
     :param file_path: 知识库文件路径
     :return: 切分后的 Document 对象列表
     :raises: FileNotFoundError, ValueError, Exception
@@ -289,43 +295,57 @@ def load_knowledge_file(file_path: str):
     # 检查文件是否存在
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"文件不存在: {file_path}")
-    
+
     # 检查文件是否为空
     if os.path.getsize(file_path) == 0:
         raise ValueError("文件内容为空")
-    
-    # 检查文件格式（目前仅支持纯文本）
+
     ext = Path(file_path).suffix.lower()
-    if ext not in ['.txt', '.md', '.py', '.java', '.js', '.json', '.csv', '.log', '']:
-        raise ValueError(f"不支持的文件格式: {ext}")
-    
-    try:
-        loader = TextLoader(file_path, encoding="utf-8")
-        docs = loader.load()
-    except UnicodeDecodeError:
-        # 尝试 gbk 编码
+
+    # 使用 file_parser 处理 TXT/DOCX/PDF 格式
+    if ext in PARSER_SUPPORTED_EXTENSIONS:
         try:
-            loader = TextLoader(file_path, encoding="gbk")
+            text = parse_file(file_path)
+        except FileNotFoundError:
+            raise
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"文件读取失败: {str(e)}")
+
+        docs = [Document(page_content=text, metadata={"source": file_path})]
+    else:
+        # 其他文本格式（.md/.py/.java 等）仍使用 TextLoader
+        if ext not in ['.md', '.py', '.java', '.js', '.json', '.csv', '.log', '']:
+            raise ValueError(f"不支持的文件格式: {ext}")
+
+        try:
+            loader = TextLoader(file_path, encoding="utf-8")
             docs = loader.load()
-        except Exception:
-            raise ValueError("无法解析文件编码，请使用 UTF-8 或 GBK 编码的文本文件")
-    except Exception as e:
-        raise ValueError(f"文件读取失败: {str(e)}")
-    
+        except UnicodeDecodeError:
+            # 尝试 gbk 编码
+            try:
+                loader = TextLoader(file_path, encoding="gbk")
+                docs = loader.load()
+            except Exception:
+                raise ValueError("无法解析文件编码，请使用 UTF-8 或 GBK 编码的文本文件")
+        except Exception as e:
+            raise ValueError(f"文件读取失败: {str(e)}")
+
     # 检查文档内容是否为空
     if not docs or all(len(doc.page_content.strip()) == 0 for doc in docs):
         raise ValueError("文件内容为空")
-    
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=300,
         chunk_overlap=50,
         separators=["\n\n", "\n", "。", "，", " ", ""]
     )
-    
+
     splits = splitter.split_documents(docs)
     if not splits:
         raise ValueError("文件内容切分后为空")
-    
+
     return splits
 
 def build_knowledge_base(db_manager: ChromaDBManager, knowledge_file: str):

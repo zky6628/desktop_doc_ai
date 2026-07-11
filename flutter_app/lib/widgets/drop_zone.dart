@@ -4,6 +4,7 @@ import 'package:cross_file/cross_file.dart';
 import 'package:provider/provider.dart';
 import '../theme/colors.dart';
 import '../models/drop_file_model.dart';
+import '../utils/file_handler.dart';
 
 /// 拖拽区域组件
 /// 默认状态：虚线边框 + 上传图标
@@ -35,10 +36,39 @@ class _DropZoneState extends State<DropZone> {
       onDragExited: (_) => setState(() => _isDragging = false),
       onDragDone: (details) {
         setState(() => _isDragging = false);
+        // 过滤不支持的文件格式
+        final (supported, unsupported) = FileHandler.filterSupported(details.files);
+
+        // 显示不支持的文件提示
+        if (unsupported.isNotEmpty && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.white),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '已忽略 ${unsupported.length} 个不支持的文件: ${unsupported.take(2).join(', ')}${unsupported.length > 2 ? '...' : ''}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: const Color(0xFFF59E0B),
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        }
+
+        if (supported.isEmpty) return;
+
         if (widget.onFilesDropped != null) {
-          widget.onFilesDropped!(details.files);
+          widget.onFilesDropped!(supported);
         } else {
-          context.read<DropFileModel>().addFiles(details.files);
+          context.read<DropFileModel>().addFiles(supported);
         }
       },
       child: AnimatedContainer(
@@ -85,7 +115,7 @@ class _DropZoneState extends State<DropZone> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '支持多文件同时拖拽',
+                  '支持 PDF / TXT / DOCX 格式，可多文件拖拽',
                   style: TextStyle(
                     fontSize: 11,
                     color: _isDragging
