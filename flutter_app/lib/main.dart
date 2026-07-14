@@ -274,6 +274,73 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
+  Widget _buildModelSelector() {
+    return Consumer<DropFileModel>(
+      builder: (context, model, _) {
+        final ragService = model.ragService;
+        return ListenableBuilder(
+          listenable: ragService,
+          builder: (context, _) {
+            final models = ragService.models;
+            final currentId = ragService.currentModelId;
+
+            if (models.isEmpty || !ragService.isReady) {
+              return const SizedBox.shrink();
+            }
+
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surface,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: Theme.of(context).dividerColor,
+                  width: 1,
+                ),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: currentId ?? models.first.id,
+                  isDense: true,
+                  icon: const Icon(Icons.keyboard_arrow_down, size: 18),
+                  items: models.map((m) {
+                    return DropdownMenuItem<String>(
+                      value: m.id,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            m.isLocal ? Icons.computer : Icons.cloud,
+                            size: 14,
+                            color: m.isLocal
+                                ? const Color(0xFF16A34A)
+                                : const Color(0xFF3B82F6),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            m.name,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                  onChanged: model.isLoading
+                      ? null
+                      : (value) {
+                          if (value != null) {
+                            ragService.setCurrentModel(value);
+                          }
+                        },
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildChatPanel() {
     return Card(
       child: Padding(
@@ -284,11 +351,13 @@ class _MyHomePageState extends State<MyHomePage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Row(
+                Row(
                   children: [
-                    Icon(Icons.smart_toy, size: 20),
-                    SizedBox(width: 8),
-                    Text('智能问答', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    const Icon(Icons.smart_toy, size: 20),
+                    const SizedBox(width: 8),
+                    const Text('智能问答', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 12),
+                    _buildModelSelector(),
                   ],
                 ),
                 Consumer<DropFileModel>(

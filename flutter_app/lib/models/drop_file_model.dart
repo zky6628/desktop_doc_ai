@@ -134,11 +134,20 @@ class DropFileModel extends ChangeNotifier {
       if (sourcesList != null) {
         _sources = sourcesList.map((e) => e.toString()).toList();
       }
+
+      // 解析元数据
+      QueryMeta? meta;
+      final metaJson = data['meta'] as Map<String, dynamic>?;
+      if (metaJson != null) {
+        meta = QueryMeta.fromJson(metaJson);
+      }
+
       _chatHistory.add(ChatMessage(
         id: 'msg_${_msgIdCounter++}',
         type: MessageType.assistant,
         content: _answer ?? '(无回答)',
         sources: _sources,
+        meta: meta,
       ));
       _isLoading = false;
       notifyListeners();

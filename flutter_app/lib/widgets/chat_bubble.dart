@@ -100,6 +100,11 @@ class ChatBubble extends StatelessWidget {
           const SizedBox(height: 10),
           _buildSources(),
         ],
+        // AI 消息显示处理耗时和模型信息
+        if (!isUser && message.meta != null) ...[
+          const SizedBox(height: 8),
+          _buildMetaInfo(),
+        ],
         const SizedBox(height: 4),
         Text(
           _formatTime(message.timestamp),
@@ -179,6 +184,70 @@ class ChatBubble extends StatelessWidget {
               ),
             );
           }),
+        ],
+      ),
+    );
+  }
+
+  /// 构建处理耗时和模型信息
+  Widget _buildMetaInfo() {
+    final meta = message.meta!;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.timer_outlined,
+            size: 12,
+            color: AppColors.textSecondary,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            '处理耗时：${meta.time.toStringAsFixed(1)}秒',
+            style: TextStyle(
+              fontSize: 11,
+              color: AppColors.textSecondary,
+            ),
+          ),
+          if (meta.tokens > 0) ...[
+            const SizedBox(width: 12),
+            Icon(
+              Icons.bolt_outlined,
+              size: 12,
+              color: AppColors.textSecondary,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              '${meta.tokens} tokens',
+              style: TextStyle(
+                fontSize: 11,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+          if (meta.model.isNotEmpty) ...[
+            const SizedBox(width: 12),
+            Icon(
+              meta.provider == 'local'
+                  ? Icons.computer_outlined
+                  : Icons.cloud_outlined,
+              size: 12,
+              color: AppColors.textSecondary,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              meta.model,
+              style: TextStyle(
+                fontSize: 11,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
         ],
       ),
     );

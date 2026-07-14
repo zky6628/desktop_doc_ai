@@ -75,6 +75,59 @@ class ApiResult<T> {
   }
 }
 
+/// LLM 模型信息
+class LlmModelInfo {
+  final String id;
+  final String name;
+  final String provider;
+
+  LlmModelInfo({
+    required this.id,
+    required this.name,
+    required this.provider,
+  });
+
+  factory LlmModelInfo.fromJson(Map<String, dynamic> json) {
+    return LlmModelInfo(
+      id: json['id'] as String? ?? '',
+      name: json['name'] as String? ?? '',
+      provider: json['provider'] as String? ?? '',
+    );
+  }
+
+  bool get isLocal => provider == 'local';
+}
+
+/// 问答元数据（耗时、tokens 等）
+class QueryMeta {
+  final double time;
+  final double retrieveTime;
+  final double llmTime;
+  final int tokens;
+  final String model;
+  final String provider;
+
+  QueryMeta({
+    this.time = 0,
+    this.retrieveTime = 0,
+    this.llmTime = 0,
+    this.tokens = 0,
+    this.model = '',
+    this.provider = '',
+  });
+
+  factory QueryMeta.fromJson(Map<String, dynamic> json) {
+    return QueryMeta(
+      time: (json['time'] as num?)?.toDouble() ?? 0,
+      retrieveTime: (json['retrieve_time'] as num?)?.toDouble() ?? 0,
+      llmTime: (json['llm_time'] as num?)?.toDouble() ?? 0,
+      tokens: (json['tokens'] as num?)?.toInt() ?? 0,
+      model: json['model'] as String? ?? '',
+      provider: json['provider'] as String? ?? '',
+    );
+  }
+}
+
 /// RAG 服务类
 /// 通过 HTTP 协议与 Python FastAPI 后端通信
 class RagService extends ChangeNotifier {
@@ -84,6 +137,10 @@ class RagService extends ChangeNotifier {
   bool _isReady = false;
   // 错误信息
   String? _errorMessage;
+  // 可用模型列表
+  List<LlmModelInfo> _models = [];
+  // 当前选中的模型 ID
+  String? _currentModelId;
 
   // 获取服务是否就绪
   bool get isReady => _isReady;
@@ -93,6 +150,10 @@ class RagService extends ChangeNotifier {
   String get baseUrl => _baseUrl;
   // 兼容旧接口：isRunning 与 isReady 保持一致
   bool get isRunning => _isReady;
+  // 可用模型列表
+  List<LlmModelInfo> get models => List.unmodifiable(_models);
+  // 当前选中的模型 ID
+  String? get currentModelId => _currentModelId;
 
   /// 设置后端服务地址
   void setBaseUrl(String url) {
@@ -116,6 +177,10 @@ class RagService extends ChangeNotifier {
         _isReady = true;
         _errorMessage = null;
         debugPrint('RAG API 服务连接成功！');
+
+        // 加载可用模型列表
+        await _loadModels();
+
         notifyListeners();
         return true;
       } else {
@@ -133,6 +198,34 @@ class RagService extends ChangeNotifier {
     }
   }
 
+  /// 加载可用模型列表
+  Future<void> _loadModels() async {
+    try {
+      final result = await getModels();
+      if (result.isSuccess && result.data != null) {
+        final modelsList = result.data!['models'] as List<dynamic>?;
+        if (modelsList != null) {
+          _models = modelsList
+              .map((e) => LlmModelInfo.fromJson(e as Map<String, dynamic>))
+              .toList();
+          // 默认选中第一个模型
+          if (_models.isNotEmpty && _currentModelId == null) {
+            _currentModelId = _models.first.id;
+          }
+          debugPrint('加载到 ${_models.length} 个可用模型');
+        }
+      }
+    } catch (e) {
+      debugPrint('加载模型列表失败: $e');
+    }
+  }
+
+  /// 切换当前模型
+  void setCurrentModel(String modelId) {
+    _currentModelId = modelId;
+    notifyListeners();
+  }
+
   /// 发送 HTTP GET 请求
   /// [endpoint] 接口路径
   /// 返回解析后的 ApiResult
@@ -142,7 +235,7 @@ class RagService extends ChangeNotifier {
       final response = await http.get(
         url,
         headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 120));
 
       return _parseResponse(response);
     } on SocketException catch (e) {
@@ -174,7 +267,7 @@ class RagService extends ChangeNotifier {
         url,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(body),
-      ).timeout(const Duration(seconds: 30));
+      ).timeout(const Duration(seconds: 120));
 
       return _parseResponse(response);
     } on SocketException catch (e) {
@@ -250,9 +343,23 @@ class RagService extends ChangeNotifier {
 
   /// RAG 问答查询
   /// [question] 用户问题
-  /// 返回包含 answer 和 sources 的 Map
-  Future<ApiResult<Map<String, dynamic>>> query(String question) async {
-    return _post('/query', {'question': question});
+  /// [modelId] 模型 ID（可选，默认使用当前选中的模型）
+  /// 返回包含 answer、sources 和 meta 的 Map
+  Future<ApiResult<Map<String, dynamic>>> query(
+    String question, {
+    String? modelId,
+  }) async {
+    final body = <String, dynamic>{'question': question};
+    final mid = modelId ?? _currentModelId;
+    if (mid != null) {
+      body['model_id'] = mid;
+    }
+    return _post('/query', body);
+  }
+
+  /// 获取可用模型列表
+  Future<ApiResult<Map<String, dynamic>>> getModels() async {
+    return _get('/models');
   }
 
   /// 相似度检索

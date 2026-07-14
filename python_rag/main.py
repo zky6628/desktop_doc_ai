@@ -14,6 +14,8 @@ import io
 import json
 # 导入异常类型
 from pathlib import Path
+# 导入时间模块（用于性能监控）
+import time
 
 # 将脚本所在目录添加到 sys.path，确保同目录模块可正确导入
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -89,9 +91,7 @@ from dotenv import load_dotenv
 
 # ===================== 编码设置：强制使用 UTF-8 =====================
 # 解决 Windows 下控制台默认 GBK 编码导致的中文乱码问题
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
-sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8')
+os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 # 导入 DashScope（阿里云 Qwen 服务）SDK，用于调用 Qwen 的 Embedding 和 LLM 接口
 import dashscope
@@ -108,11 +108,10 @@ from langchain_core.documents import Document
 from langchain_chroma import Chroma
 # 导入 LangChain 的 Embeddings 基类，用于自定义 Embedding
 from langchain_core.embeddings import Embeddings
-# 导入 LangChain 的 Qwen Chat 模型封装（通过 OpenAI 兼容接口）
-from langchain_openai import ChatOpenAI
-
 # 导入自定义文件解析器（支持 TXT/DOCX/PDF）
 from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
+# 导入 LLM 封装类（支持网络模型和本地 Ollama 模型）
+from llm_wrapper import LLMWrapper, LLMProviderType, DEFAULT_NETWORK_MODEL, DEFAULT_LOCAL_MODEL
 # 导入 LangChain 的提示词模板，用于构建对话提示
 from langchain_core.prompts import ChatPromptTemplate
 # 导入 LangChain 的可运行组件，用于构建 RAG 管道
@@ -143,10 +142,21 @@ dashscope.api_key = DASHSCOPE_API_KEY
 # Embedding 模型名称，使用 Qwen 的文本向量模型
 # 可选: text-embedding-v1, text-embedding-v2, text-embedding-v3
 EMBEDDING_MODEL = "text-embedding-v2"
-# LLM 模型名称，使用 Qwen 的对话模型
+# 网络 LLM 模型名称
 LLM_MODEL = "qwen-turbo"
 # Qwen 的 OpenAI 兼容接口地址
 QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# 本地 Ollama 服务地址
+OLLAMA_BASE_URL = "http://localhost:11434/v1"
+# 本地 Ollama 模型名称
+OLLAMA_MODEL = "qwen3.5:4b"
+
+# 可用模型列表（供前端选择）
+AVAILABLE_MODELS = [
+    {"id": "qwen-turbo", "name": "Qwen Turbo (网络)", "provider": "network", "base_url": QWEN_BASE_URL, "api_key": True},
+    {"id": "qwen-plus", "name": "Qwen Plus (网络)", "provider": "network", "base_url": QWEN_BASE_URL, "api_key": True},
+    {"id": f"ollama:{OLLAMA_MODEL}", "name": f"{OLLAMA_MODEL} (本地)", "provider": "local", "base_url": OLLAMA_BASE_URL, "api_key": False},
+]
 
 # ===================== 自定义 Qwen Embedding 类 =====================
 
@@ -366,48 +376,17 @@ def build_knowledge_base(db_manager: ChromaDBManager, knowledge_file: str):
     else:
         print(f"向量库已存在，共 {db_manager.count()} 个文档块", file=sys.stderr)
 
-# ===================== RAG 问答链构建 =====================
-
-def build_rag_chain(retriever):
-    """
-    构建 RAG 问答链（使用 LCEL 语法）
-    """
-    prompt = ChatPromptTemplate.from_template("""
-你是一个专业的文档助手，请根据下面的上下文回答用户的问题。
-要求：
-1. 只使用上下文信息回答，不要编造内容
-2. 如果上下文中没有答案，请明确回答"根据现有知识库无法回答该问题"
-3. 回答要简洁、准确、有条理
-
-<context>
-{context}
-</context>
-
-用户问题：{input}
-""")
-
-    rag_chain = (
-        {
-            "context": retriever,
-            "input": RunnablePassthrough()
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
-    
-    return rag_chain
-
 # ===================== 全局实例初始化（服务启动时执行一次） =====================
 
 # 初始化自定义的 Qwen Embedding 实例
 embeddings = QwenEmbeddings(model_name=EMBEDDING_MODEL)
 
-# 初始化 Qwen 聊天模型实例（通过 OpenAI 兼容接口调用）
-llm = ChatOpenAI(
+# 初始化 LLM 封装实例（默认使用网络模型）
+llm_wrapper = LLMWrapper(
+    provider=LLMProviderType.NETWORK,
     model=LLM_MODEL,
-    api_key=DASHSCOPE_API_KEY,
     base_url=QWEN_BASE_URL,
+    api_key=DASHSCOPE_API_KEY,
     temperature=0
 )
 
@@ -423,24 +402,93 @@ build_knowledge_base(db_manager, DOC_PATH)
 # 获取检索器（返回最相关的 3 个文档）
 retriever = db_manager.as_retriever(k=3)
 
-# 构建 RAG 问答链
-rag_chain = build_rag_chain(retriever)
 
 # ===================== RAG 问答封装 =====================
 
-def run_rag_with_sources(question: str):
+def run_rag_with_sources(question: str, model_id: Optional[str] = None) -> Dict[str, Any]:
     """
-    执行 RAG 问答，同时返回答案和检索到的源文档
+    执行 RAG 问答，同时返回答案、检索到的源文档和耗时统计
+    :param question: 用户问题
+    :param model_id: 模型 ID（可选，默认使用当前模型）
+    :return: {"answer": "...", "sources": [...], "meta": {"time": ..., "tokens": ..., "model": ...}}
     """
+    total_start = time.time()
+
+    # 切换模型（如果指定）
+    if model_id:
+        model_config = _find_model_config(model_id)
+        if model_config:
+            api_key = DASHSCOPE_API_KEY if model_config.get("api_key") else None
+            llm_wrapper.switch_model(
+                provider=model_config["provider"],
+                model=_extract_model_name(model_id, model_config),
+                base_url=model_config["base_url"],
+                api_key=api_key,
+            )
+
+    # 阶段 1: 检索
+    retrieve_start = time.time()
     source_docs = retriever.invoke(question)
-    answer = rag_chain.invoke(question)
-    return answer, source_docs
+    retrieve_time = round(time.time() - retrieve_start, 2)
+
+    # 构造上下文
+    context = "\n\n".join([doc.page_content for doc in source_docs])
+
+    # 构造完整提示词（将系统指令、上下文、问题合并）
+    prompt = f"""你是一个专业的文档助手，请根据下面的上下文回答用户的问题。要求：
+    1. 如果上下文包含与问题相关的信息，请优先使用上下文信息回答，不要编造内容；
+    2. 如果上下文中没有相关答案，可以使用你自身的知识回答；
+    3. 回答要简洁、准确、有条理。
+    
+    <context>
+    {context}
+    </context>
+
+    用户问题：{question}
+"""
+
+    # 阶段 2: LLM 生成
+    llm_result = llm_wrapper.single_turn(prompt)
+    answer = llm_result["text"]
+    llm_meta = llm_result["meta"]
+
+    # 总耗时
+    total_time = round(time.time() - total_start, 2)
+
+    return {
+        "answer": answer,
+        "sources": [doc.page_content for doc in source_docs],
+        "meta": {
+            "time": total_time,
+            "retrieve_time": retrieve_time,
+            "llm_time": llm_meta.get("time", 0),
+            "tokens": llm_meta.get("tokens", 0),
+            "model": llm_wrapper.model,
+            "provider": llm_wrapper.provider,
+        },
+    }
+
+
+def _find_model_config(model_id: str) -> Optional[Dict[str, Any]]:
+    """根据模型 ID 查找配置"""
+    for m in AVAILABLE_MODELS:
+        if m["id"] == model_id:
+            return m
+    return None
+
+
+def _extract_model_name(model_id: str, config: Dict[str, Any]) -> str:
+    """从模型 ID 中提取实际模型名"""
+    if model_id.startswith("ollama:"):
+        return model_id[len("ollama:"):]
+    return model_id
 
 # ===================== FastAPI 请求/响应模型 =====================
 
 class QueryRequest(BaseModel):
     """RAG 问答请求模型"""
     question: str = Field(..., description="用户的问题")
+    model_id: Optional[str] = Field(default=None, description="模型 ID（可选，不指定则使用默认模型）")
 
 class SearchRequest(BaseModel):
     """相似度检索请求模型"""
@@ -527,6 +575,19 @@ async def ping():
     """健康检查接口"""
     return success_response({"status": "pong"})
 
+@app.get("/models", tags=["系统"])
+async def get_models():
+    """获取可用模型列表"""
+    models_info = [
+        {
+            "id": m["id"],
+            "name": m["name"],
+            "provider": m["provider"],
+        }
+        for m in AVAILABLE_MODELS
+    ]
+    return success_response({"models": models_info})
+
 @app.get("/count", tags=["知识库管理"])
 async def get_count():
     """获取知识库文档总数"""
@@ -537,21 +598,23 @@ async def get_count():
         return _handle_exception(e)
 
 @app.post("/query", tags=["RAG 问答"])
-async def query_rag(request: QueryRequest):
+def query_rag(request: QueryRequest):
     """
     RAG 智能问答接口
-    传入问题，返回答案和参考来源
+    传入问题，返回答案、参考来源和耗时统计
     """
     try:
         if not request.question or not request.question.strip():
             return error_response(ErrorCode.INVALID_PARAM, "问题不能为空")
-        
-        answer, source_docs = run_rag_with_sources(request.question)
-        
-        return success_response({
-            "answer": answer,
-            "sources": [doc.page_content for doc in source_docs]
-        })
+
+        result = run_rag_with_sources(request.question, model_id=request.model_id)
+
+        # 检查 LLM 返回是否有错误
+        if not result["answer"] and result["meta"].get("tokens", 0) == 0:
+            error_msg = result["meta"].get("error", "AI 服务调用失败")
+            return error_response(ErrorCode.API_ERROR, f"AI 服务调用失败: {error_msg}")
+
+        return success_response(result)
     except Exception as e:
         return _handle_exception(e)
 
@@ -742,4 +805,9 @@ if __name__ == "__main__":
     # 启动 FastAPI 服务，监听本地 8000 端口
     print("正在启动 RAG API 服务...", file=sys.stderr)
     print(f"当前向量库文档数量: {db_manager.count()}", file=sys.stderr)
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(
+        app, 
+        host="127.0.0.1", 
+        port=8000,
+        timeout_keep_alive=300,
+    )

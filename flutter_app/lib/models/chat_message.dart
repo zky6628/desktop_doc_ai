@@ -1,3 +1,5 @@
+import '../services/rag_service.dart';
+
 /// 对话消息类型
 enum MessageType { user, assistant }
 
@@ -19,12 +21,16 @@ class ChatMessage {
   /// 发送时间
   final DateTime timestamp;
 
+  /// 问答元数据（耗时、tokens、模型等，仅 AI 消息有）
+  final QueryMeta? meta;
+
   ChatMessage({
     required this.id,
     required this.type,
     required this.content,
     this.sources = const [],
     DateTime? timestamp,
+    this.meta,
   }) : timestamp = timestamp ?? DateTime.now();
 
   /// 是否为用户消息
