@@ -362,11 +362,13 @@ class _MyHomePageState extends State<MyHomePage> {
                 ),
                 Consumer<DropFileModel>(
                   builder: (context, model, _) {
-                    if (model.chatHistory.isEmpty) return const SizedBox.shrink();
+                    if (model.chatHistory.isEmpty || model.currentConversation == null) return const SizedBox.shrink();
                     return TextButton.icon(
-                      onPressed: () => model.clearChatHistory(),
+                      onPressed: () {
+                        model.deleteConversation(model.currentConversation!.id);
+                      },
                       icon: const Icon(Icons.delete_outline, size: 16),
-                      label: const Text('清空对话'),
+                      label: const Text('删除对话'),
                     );
                   },
                 ),

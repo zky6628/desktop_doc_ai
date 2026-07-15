@@ -382,6 +382,13 @@ class RagService extends ChangeNotifier {
     return _post('/delete_all', {});
   }
 
+  /// 按源文件路径删除关联的所有向量文档
+  ///
+  /// [source] 文件路径（metadata 中的 source 字段）
+  Future<ApiResult<Map<String, dynamic>>> deleteBySource(String source) async {
+    return _post('/delete_by_source', {'source': source});
+  }
+
   /// 断开连接（HTTP 无状态，仅更新本地状态）
   Future<void> stop() async {
     _isReady = false;

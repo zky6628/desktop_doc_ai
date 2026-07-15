@@ -249,6 +249,23 @@ class ChromaDBManager:
     def delete_by_ids(self, ids):
         self.vector_store.delete(ids=ids)
 
+    def delete_by_source(self, source):
+        """
+        根据源文件路径删除关联的所有文档
+        :param source: 文件路径（metadata 中的 source 字段）
+        :return: 删除的文档数量
+        """
+        all_data = self.vector_store.get()
+        all_ids = all_data.get("ids", [])
+        all_metadatas = all_data.get("metadatas", [])
+        ids_to_delete = []
+        for doc_id, metadata in zip(all_ids, all_metadatas):
+            if metadata and metadata.get("source") == source:
+                ids_to_delete.append(doc_id)
+        if ids_to_delete:
+            self.vector_store.delete(ids=ids_to_delete)
+        return len(ids_to_delete)
+
     def delete_all(self):
         all_ids = self.vector_store.get()["ids"]
         if all_ids:
@@ -508,6 +525,10 @@ class DeleteByIdsRequest(BaseModel):
     """按ID删除请求模型"""
     ids: List[str] = Field(..., description="文档ID列表")
 
+class DeleteBySourceRequest(BaseModel):
+    """按源文件路径删除请求模型"""
+    source: str = Field(..., description="源文件路径（metadata 中的 source 字段）")
+
 class UpdateTextRequest(BaseModel):
     """更新文档请求模型"""
     id: str = Field(..., description="文档ID")
@@ -736,6 +757,20 @@ async def delete_by_ids(request: DeleteByIdsRequest):
         
         db_manager.delete_by_ids(request.ids)
         return success_response({"status": "success", "deleted_count": len(request.ids)})
+    except Exception as e:
+        return _handle_exception(e)
+
+@app.post("/delete_by_source", tags=["知识库管理"])
+async def delete_by_source(request: DeleteBySourceRequest):
+    """
+    按源文件路径删除关联的所有文档
+    """
+    try:
+        if not request.source:
+            return error_response(ErrorCode.INVALID_PARAM, "源文件路径不能为空")
+        
+        deleted_count = db_manager.delete_by_source(request.source)
+        return success_response({"status": "success", "deleted_count": deleted_count})
     except Exception as e:
         return _handle_exception(e)
 
