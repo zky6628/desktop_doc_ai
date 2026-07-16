@@ -97,7 +97,7 @@ class DropFileModel extends ChangeNotifier {
   ///
   /// 会加载对话历史和知识库文件列表。
   Future<void> initDatabase() async {
-    await _db.database;
+    await _db.getConversations();
     await loadConversations();
     await loadKnowledgeFiles();
     notifyListeners();

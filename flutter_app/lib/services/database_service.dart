@@ -1,16 +1,15 @@
-import 'dart:io' show Platform;
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:path/path.dart' as path;
+import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
+import 'dart:io';
 import '../models/conversation.dart';
 import '../models/chat_message.dart';
 import '../models/knowledge_file.dart';
 
-/// SQLite 数据库服务（单例）
+/// Hive 本地数据库服务（单例）
 ///
-/// 负责本地数据库的初始化、表创建以及对话、消息、文件的 CRUD 操作。
-/// 桌面端（Windows/Linux/macOS）使用 sqflite_common_ffi 作为数据库实现。
+/// 负责本地数据库的初始化以及对话、消息、文件的 CRUD 操作。
+/// 使用纯 Dart 实现的 Hive 数据库，桌面端无原生构建依赖。
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
 
@@ -18,105 +17,76 @@ class DatabaseService {
   factory DatabaseService() => _instance;
   DatabaseService._internal();
 
-  /// 数据库实例（懒加载）
-  Database? _db;
+  /// 对话 Box
+  Box<Map>? _conversationsBox;
+
+  /// 消息 Box
+  Box<Map>? _messagesBox;
+
+  /// 文件 Box
+  Box<Map>? _filesBox;
 
   /// UUID 生成器，用于生成主键 ID
   final _uuid = const Uuid();
 
-  /// 是否已初始化 FFI（桌面端用）
-  static bool _ffiInitialized = false;
+  /// 是否已初始化
+  bool _initialized = false;
 
-  /// 获取数据库实例，若未初始化则先初始化
-  Future<Database> get database async {
-    if (_db != null) return _db!;
-    _db = await _initDatabase();
-    return _db!;
+  /// 获取对话 Box
+  Future<Box<Map>> get _conversations async {
+    await _ensureInitialized();
+    return _conversationsBox!;
   }
 
-  /// 初始化数据库
-  ///
-  /// 桌面端会先初始化 FFI 工厂，然后在应用文档目录下创建数据库文件。
-  Future<Database> _initDatabase() async {
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      if (!_ffiInitialized) {
-        sqfliteFfiInit();
-        databaseFactory = databaseFactoryFfi;
-        _ffiInitialized = true;
-      }
-    }
+  /// 获取消息 Box
+  Future<Box<Map>> get _messages async {
+    await _ensureInitialized();
+    return _messagesBox!;
+  }
+
+  /// 获取文件 Box
+  Future<Box<Map>> get _files async {
+    await _ensureInitialized();
+    return _filesBox!;
+  }
+
+  /// 确保数据库已初始化
+  Future<void> _ensureInitialized() async {
+    if (_initialized) return;
+
     final appDir = await getApplicationDocumentsDirectory();
-    final dbPath = path.join(appDir.path, 'rag_chat.db');
-    return await openDatabase(
-      dbPath,
-      version: 1,
-      onCreate: _onCreate,
-    );
-  }
+    final dbDir = '${appDir.path}${Platform.pathSeparator}rag_chat_db';
+    Directory(dbDir).createSync(recursive: true);
 
-  /// 数据库创建回调，初始化表结构和索引
-  Future<void> _onCreate(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE conversations (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    ''');
+    Hive.init(dbDir);
 
-    await db.execute('''
-      CREATE TABLE messages (
-        id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        sources TEXT,
-        meta TEXT,
-        created_at INTEGER NOT NULL,
-        FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE
-      )
-    ''');
+    _conversationsBox = await Hive.openBox<Map>('conversations');
+    _messagesBox = await Hive.openBox<Map>('messages');
+    _filesBox = await Hive.openBox<Map>('files');
 
-    await db.execute('''
-      CREATE TABLE files (
-        id TEXT PRIMARY KEY,
-        filename TEXT NOT NULL,
-        filepath TEXT NOT NULL,
-        in_kb INTEGER DEFAULT 0,
-        created_at INTEGER NOT NULL
-      )
-    ''');
-
-    await db.execute(
-        'CREATE INDEX idx_messages_conversation_id ON messages (conversation_id)');
-    await db.execute('CREATE INDEX idx_files_filepath ON files (filepath)');
+    _initialized = true;
   }
 
   // ===================== 对话相关 =====================
 
   /// 获取所有对话列表，按更新时间倒序排列
   Future<List<Conversation>> getConversations() async {
-    final db = await database;
-    final maps = await db.query(
-      'conversations',
-      orderBy: 'updated_at DESC',
-    );
-    return maps.map((m) => Conversation.fromMap(m)).toList();
+    final box = await _conversations;
+    final list = box.values
+        .map((m) => Conversation.fromMap(Map<String, dynamic>.from(m)))
+        .toList();
+    list.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return list;
   }
 
   /// 根据 ID 获取单个对话
   ///
   /// [id] 对话 ID，不存在时返回 null
   Future<Conversation?> getConversation(String id) async {
-    final db = await database;
-    final maps = await db.query(
-      'conversations',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    if (maps.isEmpty) return null;
-    return Conversation.fromMap(maps.first);
+    final box = await _conversations;
+    final map = box.get(id);
+    if (map == null) return null;
+    return Conversation.fromMap(Map<String, dynamic>.from(map));
   }
 
   /// 创建新对话
@@ -124,7 +94,7 @@ class DatabaseService {
   /// [title] 对话标题，默认为"新对话"
   /// 返回创建后的对话对象
   Future<Conversation> createConversation({String? title}) async {
-    final db = await database;
+    final box = await _conversations;
     final now = DateTime.now();
     final convo = Conversation(
       id: _uuid.v4(),
@@ -132,7 +102,7 @@ class DatabaseService {
       createdAt: now,
       updatedAt: now,
     );
-    await db.insert('conversations', convo.toMap());
+    await box.put(convo.id, convo.toMap());
     return convo;
   }
 
@@ -140,16 +110,9 @@ class DatabaseService {
   ///
   /// [conversation] 要更新的对话对象
   Future<void> updateConversation(Conversation conversation) async {
-    final db = await database;
-    await db.update(
-      'conversations',
-      {
-        'title': conversation.title,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      },
-      where: 'id = ?',
-      whereArgs: [conversation.id],
-    );
+    final box = await _conversations;
+    final updated = conversation.copyWith(updatedAt: DateTime.now());
+    await box.put(conversation.id, updated.toMap());
   }
 
   /// 更新对话标题
@@ -157,26 +120,30 @@ class DatabaseService {
   /// [id] 对话 ID
   /// [title] 新标题
   Future<void> updateConversationTitle(String id, String title) async {
-    final db = await database;
-    await db.update(
-      'conversations',
-      {
-        'title': title,
-        'updated_at': DateTime.now().millisecondsSinceEpoch,
-      },
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    final box = await _conversations;
+    final map = box.get(id);
+    if (map == null) return;
+    final convo = Conversation.fromMap(Map<String, dynamic>.from(map));
+    final updated = convo.copyWith(title: title, updatedAt: DateTime.now());
+    await box.put(id, updated.toMap());
   }
 
   /// 删除对话及其关联的所有消息
   ///
   /// [id] 对话 ID
   Future<void> deleteConversation(String id) async {
-    final db = await database;
-    await db.delete('messages',
-        where: 'conversation_id = ?', whereArgs: [id]);
-    await db.delete('conversations', where: 'id = ?', whereArgs: [id]);
+    final convBox = await _conversations;
+    final msgBox = await _messages;
+
+    // 删除关联的消息
+    final msgKeysToDelete = msgBox.keys.where((key) {
+      final map = msgBox.get(key);
+      return map != null && map['conversation_id'] == id;
+    }).toList();
+    await msgBox.deleteAll(msgKeysToDelete);
+
+    // 删除对话
+    await convBox.delete(id);
   }
 
   // ===================== 消息相关 =====================
@@ -185,31 +152,34 @@ class DatabaseService {
   ///
   /// [conversationId] 对话 ID
   Future<List<ChatMessage>> getMessages(String conversationId) async {
-    final db = await database;
-    final maps = await db.query(
-      'messages',
-      where: 'conversation_id = ?',
-      whereArgs: [conversationId],
-      orderBy: 'created_at ASC',
-    );
-    return maps.map((m) => ChatMessage.fromMap(m)).toList();
+    final box = await _messages;
+    final list = box.values
+        .where((m) => m['conversation_id'] == conversationId)
+        .map((m) => ChatMessage.fromMap(Map<String, dynamic>.from(m)))
+        .toList();
+    list.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return list;
   }
 
   /// 添加一条消息，同时更新对应对话的更新时间
   ///
   /// [message] 要添加的消息对象
   Future<void> addMessage(ChatMessage message) async {
-    final db = await database;
+    final msgBox = await _messages;
+    final convBox = await _conversations;
+
     final map = message.toMap();
     map['conversation_id'] = message.conversationId;
-    await db.insert('messages', map);
+    await msgBox.put(message.id, map);
+
+    // 更新对话的更新时间
     if (message.conversationId != null) {
-      await db.update(
-        'conversations',
-        {'updated_at': DateTime.now().millisecondsSinceEpoch},
-        where: 'id = ?',
-        whereArgs: [message.conversationId],
-      );
+      final convMap = convBox.get(message.conversationId);
+      if (convMap != null) {
+        final convo = Conversation.fromMap(Map<String, dynamic>.from(convMap));
+        final updated = convo.copyWith(updatedAt: DateTime.now());
+        await convBox.put(convo.id, updated.toMap());
+      }
     }
   }
 
@@ -217,34 +187,34 @@ class DatabaseService {
   ///
   /// [id] 消息 ID
   Future<void> deleteMessage(String id) async {
-    final db = await database;
-    await db.delete('messages', where: 'id = ?', whereArgs: [id]);
+    final box = await _messages;
+    await box.delete(id);
   }
 
   // ===================== 文件相关 =====================
 
   /// 获取所有文件列表，按创建时间倒序排列
   Future<List<KnowledgeFile>> getFiles() async {
-    final db = await database;
-    final maps = await db.query(
-      'files',
-      orderBy: 'created_at DESC',
-    );
-    return maps.map((m) => KnowledgeFile.fromMap(m)).toList();
+    final box = await _files;
+    final list = box.values
+        .map((m) => KnowledgeFile.fromMap(Map<String, dynamic>.from(m)))
+        .toList();
+    list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return list;
   }
 
   /// 根据文件路径查找文件
   ///
   /// [filepath] 文件完整路径，不存在时返回 null
   Future<KnowledgeFile?> getFileByPath(String filepath) async {
-    final db = await database;
-    final maps = await db.query(
-      'files',
-      where: 'filepath = ?',
-      whereArgs: [filepath],
-    );
-    if (maps.isEmpty) return null;
-    return KnowledgeFile.fromMap(maps.first);
+    final box = await _files;
+    for (final key in box.keys) {
+      final map = box.get(key);
+      if (map != null && map['filepath'] == filepath) {
+        return KnowledgeFile.fromMap(Map<String, dynamic>.from(map));
+      }
+    }
+    return null;
   }
 
   /// 添加文件记录（若已存在则直接返回现有记录）
@@ -253,17 +223,17 @@ class DatabaseService {
   /// [filepath] 文件完整路径
   /// 返回文件对象
   Future<KnowledgeFile> addFile(String filename, String filepath) async {
-    final db = await database;
     final existing = await getFileByPath(filepath);
     if (existing != null) return existing;
 
+    final box = await _files;
     final file = KnowledgeFile(
       id: _uuid.v4(),
       filename: filename,
       filepath: filepath,
       createdAt: DateTime.now(),
     );
-    await db.insert('files', file.toMap());
+    await box.put(file.id, file.toMap());
     return file;
   }
 
@@ -272,42 +242,50 @@ class DatabaseService {
   /// [id] 文件 ID
   /// [inKb] 是否已在知识库中
   Future<void> updateFileInKB(String id, bool inKb) async {
-    final db = await database;
-    await db.update(
-      'files',
-      {'in_kb': inKb ? 1 : 0},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    final box = await _files;
+    final map = box.get(id);
+    if (map == null) return;
+    final file = KnowledgeFile.fromMap(Map<String, dynamic>.from(map));
+    final updated = file.copyWith(inKb: inKb);
+    await box.put(id, updated.toMap());
   }
 
   /// 删除文件记录
   ///
   /// [id] 文件 ID
   Future<void> deleteFile(String id) async {
-    final db = await database;
-    await db.delete('files', where: 'id = ?', whereArgs: [id]);
+    final box = await _files;
+    await box.delete(id);
   }
 
   /// 根据文件路径删除文件记录
   ///
   /// [filepath] 文件完整路径
   Future<void> deleteFileByPath(String filepath) async {
-    final db = await database;
-    await db.delete('files', where: 'filepath = ?', whereArgs: [filepath]);
+    final box = await _files;
+    final keysToDelete = box.keys.where((key) {
+      final map = box.get(key);
+      return map != null && map['filepath'] == filepath;
+    }).toList();
+    await box.deleteAll(keysToDelete);
   }
 
   /// 清空所有文件记录
   Future<void> clearFiles() async {
-    final db = await database;
-    await db.delete('files');
+    final box = await _files;
+    await box.clear();
   }
 
   // ===================== 关闭 =====================
 
   /// 关闭数据库连接
   Future<void> close() async {
-    _db?.close();
-    _db = null;
+    await _conversationsBox?.close();
+    await _messagesBox?.close();
+    await _filesBox?.close();
+    _conversationsBox = null;
+    _messagesBox = null;
+    _filesBox = null;
+    _initialized = false;
   }
 }

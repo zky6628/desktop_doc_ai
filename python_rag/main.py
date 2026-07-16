@@ -12,10 +12,14 @@ import sys
 import io
 # 导入 JSON 模块
 import json
-# 导入异常类型
-from pathlib import Path
 # 导入时间模块（用于性能监控）
 import time
+# 导入日志模块
+import logging
+# 导入 traceback 模块（用于打印完整异常堆栈）
+import traceback
+# 导入 pathlib 模块（用于路径处理）
+from pathlib import Path
 
 # 将脚本所在目录添加到 sys.path，确保同目录模块可正确导入
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,11 +27,72 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 # 导入 FastAPI 相关模块
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any, Union
+
+
+# ===================== 日志配置 =====================
+
+class ColorFormatter(logging.Formatter):
+    """带颜色输出的日志格式化器（适配 Windows 终端）"""
+
+    # 日志级别颜色映射
+    LEVEL_COLORS = {
+        logging.DEBUG: "\033[36m",     # 青色
+        logging.INFO: "\033[32m",      # 绿色
+        logging.WARNING: "\033[33m",   # 黄色
+        logging.ERROR: "\033[31m",     # 红色
+        logging.CRITICAL: "\033[35m",  # 紫色
+    }
+    RESET = "\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        """格式化日志记录，添加颜色前缀"""
+        color = self.LEVEL_COLORS.get(record.levelno, "")
+        record.levelname = f"{color}{record.levelname:<8}{self.RESET}"
+        return super().format(record)
+
+
+def setup_logging() -> logging.Logger:
+    """
+    初始化全局日志配置
+    - 控制台输出带颜色的日志
+    - 同时写入 logs/app.log 文件
+    """
+    log_format = "%(asctime)s │ %(levelname)s │ %(name)s │ %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
+
+    logger = logging.getLogger("rag_api")
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    if logger.handlers:
+        return logger
+
+    # 控制台 handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(ColorFormatter(log_format, datefmt=date_format))
+    logger.addHandler(console_handler)
+
+    # 文件 handler
+    log_dir = os.path.join(BASE_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    file_handler = logging.FileHandler(
+        os.path.join(log_dir, "app.log"), encoding="utf-8"
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+    logger.addHandler(file_handler)
+
+    return logger
+
+
+# 全局 logger 实例
+logger = setup_logging()
 
 
 # ===================== 统一错误码定义 =====================
@@ -252,7 +317,7 @@ class ChromaDBManager:
     def delete_by_source(self, source):
         """
         根据源文件路径删除关联的所有文档
-        :param source: 文件路径（metadata 中的 source 字段）
+        :param source: 文件路径（metadata 中的 source_path 或 source 字段）
         :return: 删除的文档数量
         """
         all_data = self.vector_store.get()
@@ -260,7 +325,7 @@ class ChromaDBManager:
         all_metadatas = all_data.get("metadatas", [])
         ids_to_delete = []
         for doc_id, metadata in zip(all_ids, all_metadatas):
-            if metadata and metadata.get("source") == source:
+            if metadata and (metadata.get("source_path") == source or metadata.get("source") == source):
                 ids_to_delete.append(doc_id)
         if ids_to_delete:
             self.vector_store.delete(ids=ids_to_delete)
@@ -552,31 +617,92 @@ app.add_middleware(
     allow_headers=["*"],  # 允许所有请求头
 )
 
+
+# ===================== 请求/响应日志中间件 =====================
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """
+    HTTP 请求/响应日志中间件
+    自动记录每个请求的方法、路径、耗时和响应状态码
+    """
+    # 跳过健康检查和文档接口，避免刷屏
+    skip_paths = {"/ping", "/docs", "/openapi.json", "/redoc"}
+    if request.url.path in skip_paths:
+        return await call_next(request)
+
+    start_time = time.time()
+    method = request.method
+    path = request.url.path
+
+    # 构造请求摘要（含查询参数）
+    query_str = str(request.query_params) if request.query_params else ""
+    request_summary = f"{method} {path}"
+    if query_str:
+        request_summary += f"?{query_str}"
+
+    logger.info(f"→ {request_summary}")
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        # 记录未捕获的异常
+        elapsed = round((time.time() - start_time) * 1000, 1)
+        logger.error(
+            f"✗ {request_summary} │ {elapsed}ms │ 500 Internal Server Error │ {type(exc).__name__}: {exc}"
+        )
+        logger.debug(traceback.format_exc())
+        raise
+
+    elapsed = round((time.time() - start_time) * 1000, 1)
+    status_code = response.status_code
+
+    # 根据状态码选择日志级别
+    if status_code >= 500:
+        logger.error(f"✗ {request_summary} │ {elapsed}ms │ {status_code}")
+    elif status_code >= 400:
+        logger.warning(f"⚠ {request_summary} │ {elapsed}ms │ {status_code}")
+    else:
+        logger.info(f"← {request_summary} │ {elapsed}ms │ {status_code}")
+
+    return response
+
 # ===================== API 路由 =====================
 
 # ===================== 异常处理辅助函数 =====================
 
 def _handle_exception(e: Exception) -> Dict[str, Any]:
     """
-    将异常转换为统一错误响应
+    将异常转换为统一错误响应，同时记录错误日志和完整堆栈
     """
+    # 记录完整异常堆栈（DEBUG 级别写入文件）
+    logger.debug(traceback.format_exc())
+
     if isinstance(e, FileNotFoundError):
+        logger.error(f"文件未找到: {e}")
         return error_response(ErrorCode.FILE_NOT_FOUND, str(e))
     elif isinstance(e, ValueError):
         msg = str(e).lower()
         if "不支持的文件格式" in str(e) or "unsupported" in msg:
+            logger.warning(f"不支持的文件格式: {e}")
             return error_response(ErrorCode.UNSUPPORTED_FORMAT, str(e))
         elif "空" in str(e) or "empty" in msg:
+            logger.warning(f"文件内容为空: {e}")
             return error_response(ErrorCode.EMPTY_FILE, str(e))
         else:
+            logger.warning(f"参数无效: {e}")
             return error_response(ErrorCode.INVALID_PARAM, str(e))
     elif isinstance(e, TimeoutError):
+        logger.error(f"处理超时: {e}")
         return error_response(ErrorCode.TIMEOUT, "处理超时，请稍后重试")
     elif "embedding" in str(e).lower() or "qwen" in str(e).lower() or "dashscope" in str(e).lower():
+        logger.error(f"AI 接口调用失败: {e}")
         return error_response(ErrorCode.API_ERROR, f"AI 接口调用失败: {str(e)}")
     elif "chroma" in str(e).lower() or "database" in str(e).lower() or "db" in str(e).lower():
+        logger.error(f"数据库错误: {e}")
         return error_response(ErrorCode.DB_ERROR, f"数据库错误: {str(e)}")
     else:
+        logger.error(f"未知异常 [{type(e).__name__}]: {e}")
         return error_response(ErrorCode.UNKNOWN, f"{type(e).__name__}: {str(e)}")
 
 
@@ -628,12 +754,22 @@ def query_rag(request: QueryRequest):
         if not request.question or not request.question.strip():
             return error_response(ErrorCode.INVALID_PARAM, "问题不能为空")
 
+        logger.info(f"[RAG问答] 问题: \"{request.question}\" | 模型: {request.model_id or '默认'}")
+
         result = run_rag_with_sources(request.question, model_id=request.model_id)
 
         # 检查 LLM 返回是否有错误
         if not result["answer"] and result["meta"].get("tokens", 0) == 0:
             error_msg = result["meta"].get("error", "AI 服务调用失败")
+            logger.error(f"[RAG问答] AI 服务调用失败: {error_msg}")
             return error_response(ErrorCode.API_ERROR, f"AI 服务调用失败: {error_msg}")
+
+        meta = result.get("meta", {})
+        logger.info(
+            f"[RAG问答] 完成 | 总耗时: {meta.get('time', 0)}s | "
+            f"检索: {meta.get('retrieve_time', 0)}s | LLM: {meta.get('llm_time', 0)}s | "
+            f"Tokens: {meta.get('tokens', 0)} | 模型: {meta.get('model', '?')}"
+        )
 
         return success_response(result)
     except Exception as e:
@@ -669,8 +805,8 @@ async def search_docs(request: SearchRequest):
 @app.post("/add_file", tags=["知识库管理"])
 async def add_file(request: AddFileRequest):
     """
-    添加本地文件到知识库
-    传入文件的本地绝对路径
+    添加本地文件到知识库（增量更新）
+    传入文件的本地绝对路径，若该文件已存在则先删除旧文档再重新添加
     """
     try:
         file_path = request.file_path
@@ -680,22 +816,33 @@ async def add_file(request: AddFileRequest):
         if not os.path.exists(file_path):
             return error_response(ErrorCode.FILE_NOT_FOUND, f"文件不存在: {file_path}")
         
+        logger.info(f"[添加文件] 开始处理: {file_path}")
+
         # 加载并切分文件
         splits = load_knowledge_file(file_path)
         file_name = os.path.basename(file_path)
+        logger.info(f"[添加文件] 文件解析完成: {file_name} | 分块数: {len(splits)}")
         
         # 为每个文档块添加文件来源元数据
         for doc in splits:
             doc.metadata["source_file"] = file_name
             doc.metadata["source_path"] = file_path
         
-        # 添加到向量库
+        # 增量更新：先删除该文件之前的旧文档，避免重复
+        deleted_count = db_manager.delete_by_source(file_path)
+        if deleted_count > 0:
+            logger.info(f"[添加文件] 增量更新: 删除旧文档 {deleted_count} 条")
+        
+        # 添加新文档到向量库
         ids = db_manager.add_documents(splits)
+        logger.info(f"[添加文件] 完成: {file_name} | 新增 {len(splits)} 块 | 当前库总量: {db_manager.count()}")
         
         return success_response({
             "ids": ids,
             "chunk_count": len(splits),
-            "file_name": file_name
+            "file_name": file_name,
+            "updated": deleted_count > 0,
+            "deleted_count": deleted_count
         })
     except Exception as e:
         return _handle_exception(e)
@@ -703,10 +850,12 @@ async def add_file(request: AddFileRequest):
 @app.post("/upload_file", tags=["知识库管理"])
 async def upload_file(file: UploadFile = File(...)):
     """
-    上传文件并添加到知识库
-    支持 multipart/form-data 方式上传文件
+    上传文件并添加到知识库（增量更新）
+    支持 multipart/form-data 方式上传文件，若该文件已存在则先删除旧文档再重新添加
     """
     try:
+        logger.info(f"[上传文件] 开始上传: {file.filename} | 大小: {file.size} 字节")
+
         # 保存上传的文件到临时目录
         file_location = os.path.join(UPLOAD_DIR, file.filename)
         with open(file_location, "wb") as f:
@@ -715,19 +864,28 @@ async def upload_file(file: UploadFile = File(...)):
         
         # 加载并切分文件
         splits = load_knowledge_file(file_location)
+        logger.info(f"[上传文件] 文件解析完成: {file.filename} | 分块数: {len(splits)}")
         
         # 为每个文档块添加文件来源元数据
         for doc in splits:
             doc.metadata["source_file"] = file.filename
             doc.metadata["source_path"] = file_location
         
-        # 添加到向量库
+        # 增量更新：先删除该文件之前的旧文档，避免重复
+        deleted_count = db_manager.delete_by_source(file_location)
+        if deleted_count > 0:
+            logger.info(f"[上传文件] 增量更新: 删除旧文档 {deleted_count} 条")
+        
+        # 添加新文档到向量库
         ids = db_manager.add_documents(splits)
+        logger.info(f"[上传文件] 完成: {file.filename} | 新增 {len(splits)} 块 | 当前库总量: {db_manager.count()}")
         
         return success_response({
             "ids": ids,
             "chunk_count": len(splits),
-            "file_name": file.filename
+            "file_name": file.filename,
+            "updated": deleted_count > 0,
+            "deleted_count": deleted_count
         })
     except Exception as e:
         return _handle_exception(e)
@@ -756,6 +914,7 @@ async def delete_by_ids(request: DeleteByIdsRequest):
             return error_response(ErrorCode.INVALID_PARAM, "ID列表不能为空")
         
         db_manager.delete_by_ids(request.ids)
+        logger.info(f"[删除文档] 按ID删除 {len(request.ids)} 条 | 剩余: {db_manager.count()}")
         return success_response({"status": "success", "deleted_count": len(request.ids)})
     except Exception as e:
         return _handle_exception(e)
@@ -770,6 +929,7 @@ async def delete_by_source(request: DeleteBySourceRequest):
             return error_response(ErrorCode.INVALID_PARAM, "源文件路径不能为空")
         
         deleted_count = db_manager.delete_by_source(request.source)
+        logger.info(f"[删除文档] 按源文件删除: {request.source} | 删除 {deleted_count} 条 | 剩余: {db_manager.count()}")
         return success_response({"status": "success", "deleted_count": deleted_count})
     except Exception as e:
         return _handle_exception(e)
@@ -782,6 +942,7 @@ async def delete_all():
     try:
         count_before = db_manager.count()
         db_manager.delete_all()
+        logger.warning(f"[清空知识库] 已清空全部文档: {count_before} 条")
         return success_response({"status": "success", "deleted_count": count_before})
     except Exception as e:
         return _handle_exception(e)
@@ -798,6 +959,7 @@ async def update_text(request: UpdateTextRequest):
             return error_response(ErrorCode.INVALID_PARAM, "文本内容不能为空")
         
         db_manager.update_text(request.id, request.text, request.metadata)
+        logger.info(f"[更新文档] ID: {request.id} | 内容长度: {len(request.text)}")
         return success_response({"status": "success", "id": request.id})
     except Exception as e:
         return _handle_exception(e)
@@ -823,12 +985,15 @@ async def reload_knowledge():
     重新加载默认知识库文件
     """
     try:
+        logger.info("[重载知识库] 开始清空并重新加载默认知识库")
         db_manager.delete_all()
         if os.path.exists(DOC_PATH):
             splits = load_knowledge_file(DOC_PATH)
             db_manager.add_documents(splits)
+            logger.info(f"[重载知识库] 完成 | 重新加载 {len(splits)} 块文档")
             return success_response({"status": "success", "chunk_count": len(splits)})
         else:
+            logger.warning(f"[重载知识库] 知识库文件不存在: {DOC_PATH}")
             return error_response(ErrorCode.FILE_NOT_FOUND, f"知识库文件不存在: {DOC_PATH}")
     except Exception as e:
         return _handle_exception(e)
@@ -838,8 +1003,12 @@ async def reload_knowledge():
 if __name__ == "__main__":
     import uvicorn
     # 启动 FastAPI 服务，监听本地 8000 端口
-    print("正在启动 RAG API 服务...", file=sys.stderr)
-    print(f"当前向量库文档数量: {db_manager.count()}", file=sys.stderr)
+    logger.info("=" * 60)
+    logger.info("RAG Document AI API 服务启动中...")
+    logger.info(f"向量库持久化目录: {CHROMA_DIR}")
+    logger.info(f"当前向量库文档数量: {db_manager.count()}")
+    logger.info(f"可用模型: {[m['id'] for m in AVAILABLE_MODELS]}")
+    logger.info("=" * 60)
     uvicorn.run(
         app, 
         host="127.0.0.1", 

@@ -46,4 +46,23 @@ class KnowledgeFile {
       'in_kb': inKnowledgeBase ? 1 : 0,
     };
   }
+
+  /// 创建副本并修改指定字段
+  ///
+  /// 用于不可变对象的部分更新。
+  KnowledgeFile copyWith({
+    String? id,
+    String? filename,
+    String? filepath,
+    DateTime? createdAt,
+    bool? inKb,
+  }) {
+    return KnowledgeFile(
+      id: id ?? this.id,
+      filename: filename ?? this.filename,
+      filepath: filepath ?? this.filepath,
+      createdAt: createdAt ?? this.createdAt,
+      inKnowledgeBase: inKb ?? inKnowledgeBase,
+    );
+  }
 }
