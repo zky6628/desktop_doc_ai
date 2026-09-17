@@ -32,6 +32,9 @@ class DatabaseService {
   /// 是否已初始化
   bool _initialized = false;
 
+  /// 数据库目录路径（Hive.init 使用的目录）
+  String? _dbDir;
+
   /// 获取对话 Box
   Future<Box<Map>> get _conversations async {
     await _ensureInitialized();
@@ -50,6 +53,29 @@ class DatabaseService {
     return _filesBox!;
   }
 
+  /// 打开指定名称的 Box
+  ///
+  /// Windows 下 Hive 的 .lock 标记文件偶发无法打开（PathAccessException，
+  /// errno = 5），而该文件是 0 字节的锁标记、不承载数据。
+  /// 此时删除该标记文件后重试一次，即可恢复正常打开。
+  /// 若删除本身失败（说明标记文件仍被其他进程持有），按原语义抛出异常。
+  ///
+  /// [name] Box 名称
+  Future<Box<Map>> _openBoxWithLockRecovery(String name) async {
+    try {
+      return await Hive.openBox<Map>(name);
+    } on PathAccessException {
+      final lockFile =
+          File('$_dbDir${Platform.pathSeparator}$name.lock');
+      try {
+        await lockFile.delete();
+      } on FileSystemException {
+        rethrow;
+      }
+      return await Hive.openBox<Map>(name);
+    }
+  }
+
   /// 确保数据库已初始化
   Future<void> _ensureInitialized() async {
     if (_initialized) return;
@@ -57,12 +83,13 @@ class DatabaseService {
     final appDir = await getApplicationDocumentsDirectory();
     final dbDir = '${appDir.path}${Platform.pathSeparator}rag_chat_db';
     Directory(dbDir).createSync(recursive: true);
+    _dbDir = dbDir;
 
     Hive.init(dbDir);
 
-    _conversationsBox = await Hive.openBox<Map>('conversations');
-    _messagesBox = await Hive.openBox<Map>('messages');
-    _filesBox = await Hive.openBox<Map>('files');
+    _conversationsBox = await _openBoxWithLockRecovery('conversations');
+    _messagesBox = await _openBoxWithLockRecovery('messages');
+    _filesBox = await _openBoxWithLockRecovery('files');
 
     _initialized = true;
   }

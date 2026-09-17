@@ -45,9 +45,14 @@ class _MyHomePageState extends State<MyHomePage> {
   );
   final ScrollController _chatScrollController = ScrollController();
 
+  /// 页面生命周期内使用的状态模型引用
+  /// 在 initState 中获取，避免 dispose 等非活跃阶段访问 InheritedWidget
+  late final DropFileModel _model;
+
   @override
   void initState() {
     super.initState();
+    _model = context.read<DropFileModel>();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _connectRagService();
     });
@@ -58,7 +63,7 @@ class _MyHomePageState extends State<MyHomePage> {
     _queryController.dispose();
     _urlController.dispose();
     _chatScrollController.dispose();
-    context.read<DropFileModel>().stopRagService();
+    _model.stopRagService();
     super.dispose();
   }
 
@@ -109,14 +114,21 @@ class _MyHomePageState extends State<MyHomePage> {
 
   Future<void> _connectRagService() async {
     setState(() => _isConnecting = true);
-    final model = context.read<DropFileModel>();
-    final success = await model.initRagService(baseUrl: _urlController.text.trim());
-
-    if (!success && mounted) {
-      _showErrorSnackBar(model.ragService.errorMessage ?? 'RAG 服务连接失败');
+    bool success = false;
+    String? failureMessage;
+    try {
+      success = await _model.initRagService(baseUrl: _urlController.text.trim());
+    } catch (e) {
+      failureMessage = '初始化失败: $e';
     }
 
-    if (mounted) setState(() => _isConnecting = false);
+    if (!mounted) return;
+    if (!success) {
+      _showErrorSnackBar(
+          failureMessage ?? _model.ragService.errorMessage ?? 'RAG 服务连接失败');
+    }
+
+    setState(() => _isConnecting = false);
   }
 
   Future<void> _showSettingsDialog() async {
