@@ -1,0 +1,4 @@
+# 测试与开发工具依赖（精确版本见 requirements-dev.lock，由 uv pip compile 生成）
+pytest>=8.0
+ruff>=0.16
+mypy>=1.13

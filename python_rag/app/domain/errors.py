@@ -1,0 +1,26 @@
+# -*- coding: utf-8 -*-
+"""领域层错误类型
+
+Repository 实现把存储层约束冲突（唯一索引、校验失败等）翻译为这些
+领域错误，上层据此生成用户可见的错误码，而不是直接暴露 SQL 异常。
+"""
+
+
+class RepositoryError(RuntimeError):
+    """仓储操作失败的基类"""
+
+
+class EntityNotFoundError(RepositoryError):
+    """按 ID 操作的目标实体不存在"""
+
+
+class DuplicateActiveNameError(RepositoryError):
+    """活动状态下名称唯一约束冲突"""
+
+
+class DuplicateActiveContentError(RepositoryError):
+    """活动状态下内容哈希唯一约束冲突"""
+
+
+class ActivationError(RepositoryError):
+    """版本激活事务校验失败（状态不允许激活或双向一致性无法满足）"""
