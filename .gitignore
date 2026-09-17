@@ -45,10 +45,8 @@ app.*.map.json
 /android/app/release
 flutter_app/.vscode/launch.json
 python_rag/.env
-python_rag/chroma_db/461e8cd1-4f2b-42cd-a39a-9d8d7da41e55/data_level0.bin
-python_rag/chroma_db/461e8cd1-4f2b-42cd-a39a-9d8d7da41e55/header.bin
-python_rag/chroma_db/461e8cd1-4f2b-42cd-a39a-9d8d7da41e55/length.bin
-python_rag/chroma_db/461e8cd1-4f2b-42cd-a39a-9d8d7da41e55/link_lists.bin
-flutter_app/pubspec.lock
+python_rag/chroma_db/
 .vscode/launch.json
 summary.md
+AGENTS.md
+docs/workbench/
