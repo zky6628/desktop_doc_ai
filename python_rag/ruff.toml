@@ -1,0 +1,7 @@
+# Python 静态检查配置（规范 10 提交门禁：lint）
+# 适用于 python_rag/ 目录
+
+[lint]
+ignore = [
+    "UP009", # 保留 UTF-8 coding 声明：Windows/中文环境的项目惯例
+]
