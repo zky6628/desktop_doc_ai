@@ -2,10 +2,13 @@
 """任务状态机与队列容量合同
 
 状态生命周期与处理阶段分离：state 描述任务生命周期，stage 描述当前或
-最近处理阶段，阶段名不得写入 state。合法迁移关系、终态/pending 口径与
-容量上限在此统一定义；仓储实现与后续的领取/调度逻辑必须复用本模块，
-禁止各自内联规则导致口径漂移。
+最近处理阶段，阶段名不得写入 state。合法迁移关系、终态/pending 口径、
+容量上限与自动重试退避在此统一定义；仓储实现与后续的领取/调度逻辑
+必须复用本模块，禁止各自内联规则导致口径漂移。
 """
+import random
+from collections.abc import Callable
+
 from app.domain.entities import TaskStatus
 from app.domain.errors import TaskStateConflictError
 
@@ -69,6 +72,29 @@ MAX_NON_TERMINAL = 53
 LEASE_DURATION_SECONDS = 60
 HEARTBEAT_INTERVAL_SECONDS = 15
 TAKEOVER_GRACE_SECONDS = 30
+
+# 自动重试基础退避（秒）：按当前阶段已安排的重试序号取值
+RETRY_BACKOFF_SECONDS = {1: 5, 2: 20, 3: 60}
+
+# 退避随机抖动比例：在基础退避上叠加 0 ~ 20% 的抖动，避免同批任务同时重试
+RETRY_JITTER_RATIO = 0.2
+
+# 所有阶段累计的重试再执行次数硬上限：达到后不再安排自动重试，
+# 直接转入失败终态（正常首执行不计入，只约束重试的累计规模）
+MAX_TOTAL_ATTEMPTS = 12
+
+
+def retry_backoff_seconds(
+    retry_count: int, rng: Callable[[], float] = random.random
+) -> int:
+    """计算自动重试的退避秒数（含随机抖动，取整到秒）
+
+    :param retry_count: 当前阶段已安排的重试序号（从 1 起）
+    :param rng: 随机源，返回 0.0 ~ 1.0；测试可注入固定值
+    :return: 基础退避加上其 0 ~ 20% 抖动后的整数秒
+    """
+    base = RETRY_BACKOFF_SECONDS[retry_count]
+    return round(base * (1 + RETRY_JITTER_RATIO * rng()))
 
 
 def require_valid_transition(current: TaskStatus, target: TaskStatus) -> None:

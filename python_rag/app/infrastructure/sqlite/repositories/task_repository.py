@@ -261,7 +261,6 @@ class SQLiteTaskRepository(TaskRepositoryPort):
             conn.execute(
                 "UPDATE tasks SET state = ?, lease_owner = ?, lease_expires_at = ?,"
                 " heartbeat_at = ?, attempt_count = attempt_count + 1,"
-                " total_attempt_count = total_attempt_count + 1,"
                 " started_at = COALESCE(started_at, ?)"
                 " WHERE id = ?",
                 (
@@ -308,15 +307,22 @@ class SQLiteTaskRepository(TaskRepositoryPort):
     ) -> Task:
         def _update(conn) -> Task:
             task = self._require_leased_task(conn, task_id, worker_id)
-            # 进入与当前不同的阶段视为新阶段开始执行；同阶段重复上报
-            # （如批次间进度刷新）不改变执行计数
-            stage_attempt = 1 if task.stage != stage else task.stage_attempt
+            # 进入与当前不同的阶段视为新阶段开始执行：执行序号置 1，
+            # 当前阶段的自动重试预算重置；同阶段重复上报（如批次间
+            # 进度刷新）不改变任何计数
+            if task.stage != stage:
+                stage_attempt = 1
+                retry_count = 0
+            else:
+                stage_attempt = task.stage_attempt
+                retry_count = task.retry_count
             conn.execute(
-                "UPDATE tasks SET stage = ?, stage_attempt = ?,"
+                "UPDATE tasks SET stage = ?, stage_attempt = ?, retry_count = ?,"
                 " progress = COALESCE(?, progress),"
                 " checkpoint_json = COALESCE(?, checkpoint_json)"
                 " WHERE id = ?",
-                (stage.value, stage_attempt, progress, checkpoint_json, task_id),
+                (stage.value, stage_attempt, retry_count, progress,
+                 checkpoint_json, task_id),
             )
             return self._to_entity(self._get_row(conn, task_id))
 
@@ -335,14 +341,231 @@ class SQLiteTaskRepository(TaskRepositoryPort):
                     f" {task.stage.value if task.stage else '无'}，"
                     f"与完成目标 {stage.value} 不一致"
                 )
-            # 阶段成功后执行计数归零；下一阶段的开始由后续阶段写入表达
+            # 阶段成功后执行序号与该阶段的重试预算一并归零；
+            # 下一阶段的开始由后续阶段写入表达
             conn.execute(
-                "UPDATE tasks SET stage_attempt = 0 WHERE id = ?", (task_id,)
+                "UPDATE tasks SET stage_attempt = 0, retry_count = 0 WHERE id = ?",
+                (task_id,),
             )
             return self._to_entity(self._get_row(conn, task_id))
 
         return run_in_transaction(
             self._conn, _complete, f"完成任务阶段 {task_id}"
+        )
+
+    def schedule_retry(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        error_code: str,
+        error_message: str | None = None,
+    ) -> Task:
+        def _schedule(conn) -> Task:
+            task = self._require_leased_task(conn, task_id, worker_id)
+            if task.state not in (TaskStatus.RUNNING, TaskStatus.WAITING_EXTERNAL):
+                raise TaskStateConflictError(
+                    f"任务 {task_id} 状态为 {task.state.value}，不能安排自动重试"
+                )
+            now = utc_now_iso()
+            # 当前阶段重试预算耗尽，或累计重试执行达到硬上限：
+            # 不再安排下一次自动重试，转入失败终态
+            if (
+                task.retry_count >= task.max_retries
+                or task.total_attempt_count >= task_state.MAX_TOTAL_ATTEMPTS
+            ):
+                return self._fail_in_transaction(
+                    conn, task, error_code=error_code,
+                    error_message=error_message, now=now,
+                )
+
+            retry_count = task.retry_count + 1
+            backoff = task_state.retry_backoff_seconds(retry_count)
+            next_retry_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=backoff)
+            ).isoformat(timespec="seconds")
+            # 执行序号与累计重试执行在安排时预增（该次再执行已确定）；
+            # 释放租约让出执行许可，重试到期后经排队重新领取
+            conn.execute(
+                "UPDATE tasks SET state = ?, retry_count = ?,"
+                " stage_attempt = stage_attempt + 1,"
+                " total_attempt_count = total_attempt_count + 1,"
+                " next_retry_at = ?, lease_owner = NULL, lease_expires_at = NULL,"
+                " heartbeat_at = NULL, error_code = ?, error_message = ?"
+                " WHERE id = ?",
+                (
+                    TaskStatus.RETRY_WAITING.value, retry_count, next_retry_at,
+                    error_code, error_message, task_id,
+                ),
+            )
+            self._insert_event(
+                conn,
+                task_id=task_id,
+                event_type=_EVENT_STATE_CHANGED,
+                state=TaskStatus.RETRY_WAITING,
+                stage=task.stage,
+                attempt_count=task.attempt_count,
+                worker=task.lease_owner,
+                created_at=now,
+                checkpoint_json=task.checkpoint_json,
+                error_code=error_code,
+                detail_json=json.dumps(
+                    {"retry_count": retry_count, "backoff_seconds": backoff},
+                    ensure_ascii=False,
+                ),
+            )
+            return self._to_entity(self._get_row(conn, task_id))
+
+        return run_in_transaction(
+            self._conn, _schedule, f"安排任务重试 {task_id}"
+        )
+
+    def fail_task(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        error_code: str,
+        error_message: str | None = None,
+    ) -> Task:
+        def _fail(conn) -> Task:
+            task = self._require_leased_task(conn, task_id, worker_id)
+            return self._fail_in_transaction(
+                conn, task, error_code=error_code, error_message=error_message,
+                now=utc_now_iso(),
+            )
+
+        return run_in_transaction(self._conn, _fail, f"任务置失败 {task_id}")
+
+    def request_cancel(self, task_id: str) -> Task:
+        def _request(conn) -> Task:
+            row = self._get_row(conn, task_id)
+            if row is None:
+                raise EntityNotFoundError(f"任务不存在: {task_id}")
+            task = self._to_entity(row)
+            if task.state in task_state.TERMINAL_STATES:
+                raise TaskStateConflictError(
+                    f"任务 {task_id} 已进入终态 {task.state.value}，不可取消"
+                )
+            # 幂等：已在等待取消时直接返回当前状态
+            if task.state is TaskStatus.CANCEL_REQUESTED:
+                return task
+
+            now = utc_now_iso()
+            if task.state in (TaskStatus.QUEUED, TaskStatus.WAITING_USER):
+                # 尚未进入执行：立即取消并完成收尾
+                task_state.require_valid_transition(task.state, TaskStatus.CANCELLED)
+                conn.execute(
+                    "UPDATE tasks SET state = ?, finished_at = ?,"
+                    " lease_owner = NULL, lease_expires_at = NULL,"
+                    " heartbeat_at = NULL WHERE id = ?",
+                    (TaskStatus.CANCELLED.value, now, task_id),
+                )
+                self._insert_event(
+                    conn, task_id=task_id, event_type=_EVENT_STATE_CHANGED,
+                    state=TaskStatus.CANCELLED, stage=task.stage,
+                    attempt_count=task.attempt_count, worker=task.lease_owner,
+                    created_at=now,
+                )
+            else:
+                # 执行中/等待中/等待重试：先写取消请求，Worker 到安全
+                # 检查点后完成取消；租约保留以维持执行许可口径
+                task_state.require_valid_transition(
+                    task.state, TaskStatus.CANCEL_REQUESTED
+                )
+                conn.execute(
+                    "UPDATE tasks SET state = ?, cancel_requested_at = ?"
+                    " WHERE id = ?",
+                    (TaskStatus.CANCEL_REQUESTED.value, now, task_id),
+                )
+                self._insert_event(
+                    conn, task_id=task_id, event_type=_EVENT_STATE_CHANGED,
+                    state=TaskStatus.CANCEL_REQUESTED, stage=task.stage,
+                    attempt_count=task.attempt_count, worker=task.lease_owner,
+                    created_at=now, checkpoint_json=task.checkpoint_json,
+                )
+            return self._to_entity(self._get_row(conn, task_id))
+
+        return run_in_transaction(self._conn, _request, f"请求取消任务 {task_id}")
+
+    def cancel_at_checkpoint(self, task_id: str, worker_id: str) -> Task:
+        def _cancel(conn) -> Task:
+            task = self._require_leased_task(conn, task_id, worker_id)
+            if task.state is not TaskStatus.CANCEL_REQUESTED:
+                raise TaskStateConflictError(
+                    f"任务 {task_id} 状态为 {task.state.value}，不在等待取消"
+                )
+            now = utc_now_iso()
+            conn.execute(
+                "UPDATE tasks SET state = ?, finished_at = ?,"
+                " lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL"
+                " WHERE id = ?",
+                (TaskStatus.CANCELLED.value, now, task_id),
+            )
+            self._insert_event(
+                conn, task_id=task_id, event_type=_EVENT_STATE_CHANGED,
+                state=TaskStatus.CANCELLED, stage=task.stage,
+                attempt_count=task.attempt_count, worker=worker_id,
+                created_at=now, checkpoint_json=task.checkpoint_json,
+            )
+            return self._to_entity(self._get_row(conn, task_id))
+
+        return run_in_transaction(
+            self._conn, _cancel, f"完成任务取消 {task_id}"
+        )
+
+    def promote_due_retries(self) -> int:
+        def _promote(conn) -> int:
+            now = utc_now_iso()
+            rows = conn.execute(
+                "SELECT id, stage, attempt_count, checkpoint_json FROM tasks"
+                " WHERE state = ? AND next_retry_at IS NOT NULL AND next_retry_at <= ?",
+                (TaskStatus.RETRY_WAITING.value, now),
+            ).fetchall()
+            promoted = 0
+            for row in rows:
+                # 退避到期：回到排队等待重新领取。当前阶段的重试预算
+                # 保留（重试次数按阶段累计），到期时间完成使命后清空
+                conn.execute(
+                    "UPDATE tasks SET state = ?, next_retry_at = NULL WHERE id = ?",
+                    (TaskStatus.QUEUED.value, row[0]),
+                )
+                self._insert_event(
+                    conn, task_id=row[0], event_type=_EVENT_STATE_CHANGED,
+                    state=TaskStatus.QUEUED,
+                    stage=TaskStage(row[1]) if row[1] is not None else None,
+                    attempt_count=row[2], worker=None, created_at=now,
+                    checkpoint_json=row[3],
+                )
+                promoted += 1
+            return promoted
+
+        return run_in_transaction(self._conn, _promote, "提升到期重试任务")
+
+    def retry_failed(
+        self, task_id: str, *, idempotency_key: str | None = None
+    ) -> Task:
+        old = self.get(task_id)
+        if old is None:
+            raise EntityNotFoundError(f"任务不存在: {task_id}")
+        if old.state is not TaskStatus.FAILED:
+            raise TaskStateConflictError(
+                f"任务 {task_id} 状态为 {old.state.value}，仅失败任务可手动重试"
+            )
+        # 原任务保持终态不复活；新任务携带派生来源，经 create 在单事务
+        # 内完成容量检查与插入。错误码可重试性由调用方（接口层）把关
+        return self.create(
+            old.task_type,
+            knowledge_base_id=old.knowledge_base_id,
+            document_id=old.document_id,
+            document_version_id=old.document_version_id,
+            index_version_id=old.index_version_id,
+            priority=old.priority,
+            idempotency_key=idempotency_key,
+            input_json=old.input_json,
+            max_retries=old.max_retries,
+            parent_task_id=old.id,
+            retry_origin="manual",
         )
 
     @staticmethod
@@ -363,6 +586,43 @@ class SQLiteTaskRepository(TaskRepositoryPort):
         ):
             raise TaskLeaseLostError(f"任务 {task_id} 租约无效或已丢失")
         return task
+
+    @staticmethod
+    def _fail_in_transaction(
+        conn,
+        task: Task,
+        *,
+        error_code: str,
+        error_message: str | None,
+        now: str,
+    ) -> Task:
+        """在当前事务内把任务置为失败终态并释放租约。
+
+        调用方负责前置校验（租约有效、状态允许失败）；失败是终态，
+        原任务不复活，恢复手段为手动重试创建新任务
+        """
+        task_state.require_valid_transition(task.state, TaskStatus.FAILED)
+        conn.execute(
+            "UPDATE tasks SET state = ?, finished_at = ?, error_code = ?,"
+            " error_message = ?, lease_owner = NULL, lease_expires_at = NULL,"
+            " heartbeat_at = NULL WHERE id = ?",
+            (TaskStatus.FAILED.value, now, error_code, error_message, task.id),
+        )
+        SQLiteTaskRepository._insert_event(
+            conn,
+            task_id=task.id,
+            event_type=_EVENT_STATE_CHANGED,
+            state=TaskStatus.FAILED,
+            stage=task.stage,
+            attempt_count=task.attempt_count,
+            worker=task.lease_owner,
+            created_at=now,
+            checkpoint_json=task.checkpoint_json,
+            error_code=error_code,
+        )
+        return SQLiteTaskRepository._to_entity(
+            SQLiteTaskRepository._get_row(conn, task.id)
+        )
 
     def _record_rejected_transition(self, task: Task, target_state: TaskStatus) -> None:
         """把被拒绝的迁移作为审计事件落库（独立事务，不随异常回滚）"""

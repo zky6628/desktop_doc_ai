@@ -59,7 +59,8 @@ def test_claim_sets_lease_and_execution_counts(task_repo):
     assert claimed.heartbeat_at is not None
     assert claimed.started_at is not None
     assert claimed.attempt_count == 1
-    assert claimed.total_attempt_count == 1
+    # 累计重试执行只统计重试再执行，正常领取不计入
+    assert claimed.total_attempt_count == 0
     # 阶段尚未开始：stage_attempt 由阶段写入置 1
     assert claimed.stage_attempt == 0
 
@@ -294,7 +295,7 @@ def test_busy_retry_on_claim_does_not_inflate_attempt(task_repo):
         claimed = SQLiteTaskRepository(victim_conn).claim_next("worker-1")
         assert claimed is not None
         assert claimed.attempt_count == 1
-        assert claimed.total_attempt_count == 1
+        assert claimed.total_attempt_count == 0
     finally:
         victim_conn.close()
         blocker.close()

@@ -208,3 +208,57 @@ class TaskRepository(ABC):
         """租约守卫的阶段完成：当前阶段与目标一致时 stage_attempt 归零，
         阶段推进由后续写入表达；阶段不匹配抛 TaskStateConflictError，
         租约丢失抛 TaskLeaseLostError"""
+
+    @abstractmethod
+    def schedule_retry(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        error_code: str,
+        error_message: str | None = None,
+    ) -> Task:
+        """安排当前阶段的业务自动重试：按重试序号计算退避（含抖动）并
+        写入到期时间，释放租约后转入 retry_waiting；当前阶段重试预算
+        耗尽或累计重试执行达到硬上限时转入 failed 终态。
+        仅 running/waiting_external 可安排；租约丢失抛 TaskLeaseLostError"""
+
+    @abstractmethod
+    def fail_task(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        error_code: str,
+        error_message: str | None = None,
+    ) -> Task:
+        """把任务置为失败终态（不可自动恢复的错误路径）：回填
+        finished_at 与脱敏错误信息并释放租约；租约丢失抛
+        TaskLeaseLostError，状态不允许失败抛 TaskStateConflictError"""
+
+    @abstractmethod
+    def request_cancel(self, task_id: str) -> Task:
+        """请求取消任务（用户侧，不要求租约）：排队/等待确认的任务
+        立即取消并收尾；执行中的任务先转入 cancel_requested 等待
+        Worker 在安全检查点完成取消；重复请求幂等返回；
+        终态任务抛 TaskStateConflictError"""
+
+    @abstractmethod
+    def cancel_at_checkpoint(self, task_id: str, worker_id: str) -> Task:
+        """Worker 在安全检查点完成取消：cancel_requested 转入 cancelled，
+        回填 finished_at 并释放租约；状态不是等待取消抛
+        TaskStateConflictError，租约丢失抛 TaskLeaseLostError"""
+
+    @abstractmethod
+    def promote_due_retries(self) -> int:
+        """把退避到期的 retry_waiting 任务批量转回 queued（返回提升数量）；
+        当前阶段的重试预算保留，未到期任务保持不变"""
+
+    @abstractmethod
+    def retry_failed(
+        self, task_id: str, *, idempotency_key: str | None = None
+    ) -> Task:
+        """手动重试：仅失败任务可重试，创建携带派生来源（父任务与
+        manual 标记）的新任务并继承类型/引用/优先级/输入与重试预算，
+        原任务保持终态；容量满抛 TaskQueueFullError；
+        非失败状态抛 TaskStateConflictError"""
