@@ -137,85 +137,93 @@ class TxtMarkdownParser(LocalFileParser):
         )
 
     def _parse_markdown(self, normalized: str) -> list[Block]:
-        """Markdown 模式：标题构建章节路径，列表项按连续段合并，其余分段
+        """Markdown 模式：委托模块级块构建（归一化回退复用同一实现）"""
+        return markdown_blocks(normalized)
 
-        行结构识别规则：ATX 标题（1~6 个 #）、无序/有序列表项、
-        围栏代码块（围栏内部一律视为普通文本行）；标题与列表之外的
-        连续非空行按空行边界合并为 paragraph 块。
-        """
-        blocks: list = []
-        tracker = SectionPathTracker()
-        ordinal = 0
 
-        paragraph_lines: list[str] = []
-        list_items: list[str] = []
-        in_fence = False
+def markdown_blocks(normalized: str) -> list[Block]:
+    """把 Markdown 文本构建为块序列
 
-        def flush_paragraph() -> None:
-            nonlocal ordinal
-            if paragraph_lines:
-                text = "\n".join(paragraph_lines)
-                blocks.append(
-                    make_block(
-                        BlockType.PARAGRAPH,
-                        ordinal,
-                        section_path=tracker.current_path(),
-                        text=text,
-                    )
+    行结构识别规则：ATX 标题（1~6 个 #）构建章节路径、无序/有序
+    列表项按连续段合并、围栏代码块（围栏内部一律视为普通文本行）；
+    标题与列表之外的连续非空行按空行边界合并为 paragraph 块。
+
+    :param normalized: 已归一化换行（仅 LF）的 Markdown 文本
+    :return: 顺序号连续的块列表（无页面概念，page_no 为 None）
+    """
+    blocks: list[Block] = []
+    tracker = SectionPathTracker()
+    ordinal = 0
+
+    paragraph_lines: list[str] = []
+    list_items: list[str] = []
+    in_fence = False
+
+    def flush_paragraph() -> None:
+        nonlocal ordinal
+        if paragraph_lines:
+            text = "\n".join(paragraph_lines)
+            blocks.append(
+                make_block(
+                    BlockType.PARAGRAPH,
+                    ordinal,
+                    section_path=tracker.current_path(),
+                    text=text,
                 )
-                ordinal += 1
-                paragraph_lines.clear()
+            )
+            ordinal += 1
+            paragraph_lines.clear()
 
-        def flush_list() -> None:
-            nonlocal ordinal
-            if list_items:
-                blocks.append(
-                    make_block(
-                        BlockType.LIST,
-                        ordinal,
-                        section_path=tracker.current_path(),
-                        text="\n".join(list_items),
-                    )
+    def flush_list() -> None:
+        nonlocal ordinal
+        if list_items:
+            blocks.append(
+                make_block(
+                    BlockType.LIST,
+                    ordinal,
+                    section_path=tracker.current_path(),
+                    text="\n".join(list_items),
                 )
-                ordinal += 1
-                list_items.clear()
+            )
+            ordinal += 1
+            list_items.clear()
 
-        for line in normalized.split("\n"):
-            if is_markdown_fence(line):
-                # 围栏边界切换代码模式，围栏内部行按普通文本累积
-                in_fence = not in_fence
+    for line in normalized.split("\n"):
+        if is_markdown_fence(line):
+            # 围栏边界切换代码模式，围栏内部行按普通文本累积
+            in_fence = not in_fence
+            paragraph_lines.append(line.strip())
+            continue
+        if in_fence:
+            paragraph_lines.append(line.strip())
+            continue
+
+        line_type, content = parse_markdown_line(line)
+        if line_type == "heading":
+            flush_paragraph()
+            flush_list()
+            assert content is not None
+            section_path = tracker.enter_heading(
+                len(line) - len(line.lstrip("#")), content
+            )
+            blocks.append(
+                make_block(
+                    BlockType.HEADING,
+                    ordinal,
+                    section_path=section_path,
+                    text=content,
+                )
+            )
+            ordinal += 1
+        elif line_type == "list_item":
+            flush_paragraph()
+            assert content is not None
+            list_items.append(content)
+        else:
+            flush_list()
+            if line.strip():
                 paragraph_lines.append(line.strip())
-                continue
-            if in_fence:
-                paragraph_lines.append(line.strip())
-                continue
 
-            line_type, content = parse_markdown_line(line)
-            if line_type == "heading":
-                flush_paragraph()
-                flush_list()
-                assert content is not None
-                section_path = tracker.enter_heading(
-                    len(line) - len(line.lstrip("#")), content
-                )
-                blocks.append(
-                    make_block(
-                        BlockType.HEADING,
-                        ordinal,
-                        section_path=section_path,
-                        text=content,
-                    )
-                )
-                ordinal += 1
-            elif line_type == "list_item":
-                flush_paragraph()
-                assert content is not None
-                list_items.append(content)
-            else:
-                flush_list()
-                if line.strip():
-                    paragraph_lines.append(line.strip())
-
-        flush_paragraph()
-        flush_list()
-        return blocks
+    flush_paragraph()
+    flush_list()
+    return blocks

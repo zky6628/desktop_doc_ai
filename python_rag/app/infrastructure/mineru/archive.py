@@ -45,7 +45,13 @@ def extract_archive(zip_path: str, dest_dir: str) -> list[str]:
     :raises ArchiveRejectedError: 任一安全校验未通过
     """
     with zipfile.ZipFile(zip_path) as archive:
-        entries = [info for info in archive.infolist() if not info.is_dir()]
+        # 供应方随包回传原始输入副本（*_origin.<ext>）：它不是解析内容，
+        # 跳过不落盘；其余条目仍严格执行白名单
+        entries = [
+            info
+            for info in archive.infolist()
+            if not info.is_dir() and not _is_origin_echo(info.filename)
+        ]
         _validate_entries(entries)
 
         os.makedirs(dest_dir, exist_ok=True)
@@ -61,6 +67,17 @@ def extract_archive(zip_path: str, dest_dir: str) -> list[str]:
                     output.write(block)
             extracted.append(relative)
         return extracted
+
+
+def _is_origin_echo(entry_name: str) -> bool:
+    """判断条目是否为供应方回传的原始输入副本（<hash>_origin.<ext>）
+
+    :param entry_name: 压缩包内条目名
+    :return: 是原始输入副本时为 True
+    """
+    base = entry_name.replace("\\", "/").rsplit("/", 1)[-1]
+    stem, dot, _ = base.rpartition(".")
+    return bool(dot) and stem.endswith("_origin")
 
 
 def _validate_entries(entries: list) -> None:

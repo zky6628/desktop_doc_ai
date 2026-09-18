@@ -51,6 +51,31 @@ class TestNormalArchive:
         assert (dest / "full.md").read_text(encoding="utf-8") == "# 标题\n"
         assert (dest / "images" / "p1.jpg").read_bytes() == b"\xff\xd8fake-jpeg"
 
+    def test_origin_input_echo_skipped(self, tmp_path):
+        # 供应方随包回传原始输入副本（任意扩展名）：跳过不落盘，
+        # 也不影响解析内容的解压
+        zip_path = _make_zip(
+            tmp_path / "result.zip",
+            {
+                "full.md": "# 标题\n".encode(),
+                "01e00cfb-89af-4d63-9460-96e8be9ac584_origin.pdf": b"%PDF-echo",
+            },
+        )
+        dest = tmp_path / "extracted"
+        extracted = extract_archive(zip_path, str(dest))
+        assert extracted == ["full.md"]
+        assert not (dest / "01e00cfb-89af-4d63-9460-96e8be9ac584_origin.pdf").exists()
+
+    def test_content_file_with_origin_like_name_kept(self, tmp_path):
+        # 名称中包含 origin 但不符合回传副本命名（<hash>_origin.<ext>）的
+        # 普通内容文件不受跳过规则影响
+        zip_path = _make_zip(
+            tmp_path / "result.zip",
+            {"my_origin_notes.md": "笔记".encode()},
+        )
+        extracted = extract_archive(zip_path, str(tmp_path / "extracted"))
+        assert extracted == ["my_origin_notes.md"]
+
 
 class TestPathSafety:
     """路径穿越与绝对路径拒绝"""
