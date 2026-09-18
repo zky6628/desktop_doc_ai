@@ -4,10 +4,12 @@ from .document_repository import SQLiteDocumentRepository
 from .document_version_repository import SQLiteDocumentVersionRepository
 from .index_version_repository import SQLiteIndexVersionRepository
 from .knowledge_base_repository import SQLiteKnowledgeBaseRepository
+from .task_repository import SQLiteTaskRepository
 
 __all__ = [
     "SQLiteDocumentRepository",
     "SQLiteDocumentVersionRepository",
     "SQLiteIndexVersionRepository",
     "SQLiteKnowledgeBaseRepository",
+    "SQLiteTaskRepository",
 ]

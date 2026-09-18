@@ -109,3 +109,92 @@ class IndexVersion:
     created_at: str
     activated_at: str | None
     retired_at: str | None
+
+
+class TaskStatus(StrEnum):
+    """任务生命周期状态：queued 起步，succeeded/failed/cancelled 为终态"""
+
+    QUEUED = "queued"
+    WAITING_USER = "waiting_user"
+    RUNNING = "running"
+    WAITING_EXTERNAL = "waiting_external"
+    RETRY_WAITING = "retry_waiting"
+    CANCEL_REQUESTED = "cancel_requested"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskStage(StrEnum):
+    """任务处理阶段：描述当前或最近执行到的管线环节，与生命周期分离"""
+
+    VALIDATING = "validating"
+    STORING_FILE = "storing_file"
+    ROUTING_PARSER = "routing_parser"
+    PARSING_LOCAL = "parsing_local"
+    SUBMITTING_CLOUD = "submitting_cloud"
+    POLLING_CLOUD = "polling_cloud"
+    DOWNLOADING_CLOUD_RESULT = "downloading_cloud_result"
+    NORMALIZING = "normalizing"
+    CHUNKING = "chunking"
+    EMBEDDING = "embedding"
+    WRITING_VECTOR_INDEX = "writing_vector_index"
+    WRITING_KEYWORD_INDEX = "writing_keyword_index"
+    VALIDATING_INDEX = "validating_index"
+    ACTIVATING_VERSION = "activating_version"
+    CLEANING_UP = "cleaning_up"
+    COMPLETED = "completed"
+
+
+@dataclass(frozen=True)
+class Task:
+    """任务"""
+
+    id: str
+    task_type: str
+    knowledge_base_id: str | None
+    document_id: str | None
+    document_version_id: str | None
+    index_version_id: str | None
+    state: TaskStatus
+    stage: TaskStage | None
+    progress: float
+    priority: int
+    idempotency_key: str | None
+    retry_count: int
+    max_retries: int
+    attempt_count: int
+    stage_attempt: int
+    total_attempt_count: int
+    next_retry_at: str | None
+    lease_owner: str | None
+    lease_expires_at: str | None
+    heartbeat_at: str | None
+    cancel_requested_at: str | None
+    checkpoint_json: str | None
+    parent_task_id: str | None
+    retry_origin: str | None
+    error_code: str | None
+    error_message: str | None
+    input_json: str | None
+    created_at: str
+    started_at: str | None
+    finished_at: str | None
+
+
+@dataclass(frozen=True)
+class TaskEvent:
+    """任务审计事件（按写入顺序读取）"""
+
+    id: str
+    task_id: str
+    event_type: str
+    state: TaskStatus
+    stage: TaskStage | None
+    attempt_count: int
+    worker: str | None
+    created_at: str
+    duration_ms: int | None
+    checkpoint_json: str | None
+    error_code: str | None
+    detail_json: str | None

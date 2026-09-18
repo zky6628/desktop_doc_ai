@@ -24,3 +24,11 @@ class DuplicateActiveContentError(RepositoryError):
 
 class ActivationError(RepositoryError):
     """版本激活事务校验失败（状态不允许激活或双向一致性无法满足）"""
+
+
+class TaskQueueFullError(RepositoryError):
+    """任务队列容量已达上限（pending 合计或非终态合计超限），任务未被创建"""
+
+
+class TaskStateConflictError(RepositoryError):
+    """任务状态迁移不被状态机允许（含终态再迁移与自迁移）"""

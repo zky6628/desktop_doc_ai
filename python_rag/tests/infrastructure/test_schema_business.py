@@ -31,12 +31,12 @@ from .schema_helpers import (
 def _fresh_db(tmp_path):
     """创建应用过全部迁移的临时库（测试辅助）"""
     db_path, applied = fresh_db(tmp_path, name="schema_business.db")
-    assert applied == 4
+    assert applied == 5
     return db_path
 
 
 def test_migrations_apply_in_order(tmp_path):
-    """全新 SQLite 文件可按 0001->0004 顺序创建全部表与索引"""
+    """全新 SQLite 文件可按 0001->0005 顺序创建全部表与索引"""
     db_path = _fresh_db(tmp_path)
     conn = sqlite3.connect(db_path)
     try:
@@ -47,6 +47,7 @@ def test_migrations_apply_in_order(tmp_path):
             "pipeline_configs", "model_profiles", "knowledge_bases",
             "documents", "document_versions", "index_versions",
             "content_blocks", "tables", "chunks", "chunk_block_links",
+            "tasks", "task_events", "external_tasks",
             "schema_migrations",
         } <= tables
 
@@ -60,12 +61,14 @@ def test_migrations_apply_in_order(tmp_path):
             "uq_pipeline_configs_type_version",
             "uq_index_versions_one_active",
             "uq_chunks_version_ordinal",
+            "uq_tasks_idempotency_key",
+            "uq_external_tasks_provider_ref",
         } <= indexes
 
         versions = [r[0] for r in conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         )]
-        assert versions == [1, 2, 3, 4]
+        assert versions == [1, 2, 3, 4, 5]
     finally:
         conn.close()
 
@@ -77,7 +80,7 @@ def test_migrations_idempotent_on_real_dir(tmp_path):
 
 
 def test_upgrade_from_legacy_schema(tmp_path):
-    """仅含 schema_migrations 基建表的旧库可升级到 0001-0004"""
+    """仅含 schema_migrations 基建表的旧库可升级到 0001-0005"""
     db_path = str(tmp_path / "legacy_runner.db")
 
     # 模拟历史产物：仅有 runner 基建表
@@ -87,7 +90,7 @@ def test_upgrade_from_legacy_schema(tmp_path):
     finally:
         conn.close()
 
-    assert apply_migrations(db_path, _DEFAULT_MIGRATIONS_DIR) == 4
+    assert apply_migrations(db_path, _DEFAULT_MIGRATIONS_DIR) == 5
 
 
 def test_kb_active_name_unique_and_soft_delete_reuse(tmp_path):

@@ -7,7 +7,16 @@ Port 由领域层定义、基础设施层实现（SQLite Adapter）。
 """
 from abc import ABC, abstractmethod
 
-from .entities import Document, DocumentVersion, IndexVersion, KnowledgeBase
+from .entities import (
+    Document,
+    DocumentVersion,
+    IndexVersion,
+    KnowledgeBase,
+    Task,
+    TaskEvent,
+    TaskStage,
+    TaskStatus,
+)
 
 
 class KnowledgeBaseRepository(ABC):
@@ -116,3 +125,49 @@ class IndexVersionRepository(ABC):
         全过程单事务且校验双向一致。失败场景：
         目标不存在抛 EntityNotFoundError；状态为 retired/failed 抛
         ActivationError；事务内任一步失败整体回滚。"""
+
+
+class TaskRepository(ABC):
+    """任务仓储"""
+
+    @abstractmethod
+    def create(
+        self,
+        task_type: str,
+        *,
+        knowledge_base_id: str | None = None,
+        document_id: str | None = None,
+        document_version_id: str | None = None,
+        index_version_id: str | None = None,
+        priority: int = 0,
+        idempotency_key: str | None = None,
+        input_json: str | None = None,
+        max_retries: int = 3,
+        parent_task_id: str | None = None,
+        retry_origin: str | None = None,
+    ) -> Task:
+        """创建任务（初始 queued）：同一事务内完成幂等键命中检查、
+        队列容量检查、插入与创建事件，保证容量与写入原子。
+        pending 合计或非终态合计达到上限时抛 TaskQueueFullError；
+        幂等键已存在时直接返回既有任务，不重复创建。"""
+
+    @abstractmethod
+    def get(self, task_id: str) -> Task | None:
+        """按 ID 读取；不存在时返回 None"""
+
+    @abstractmethod
+    def transition(
+        self,
+        task_id: str,
+        target_state: TaskStatus,
+        stage: TaskStage | None = None,
+    ) -> Task:
+        """状态迁移：仅允许状态机定义的迁移；非法迁移写审计事件后抛
+        TaskStateConflictError。进入 running 首次回填 started_at，
+        进入 cancel_requested 时回填 cancel_requested_at，
+        进入终态时回填 finished_at。stage 提供时随迁移同批更新，
+        未提供时保持原值。目标不存在抛 EntityNotFoundError。"""
+
+    @abstractmethod
+    def list_events(self, task_id: str) -> list[TaskEvent]:
+        """按写入顺序读取任务的全部审计事件"""

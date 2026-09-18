@@ -143,3 +143,65 @@ def insert_chunk_block_link(
         "INSERT INTO chunk_block_links (chunk_id, block_id, relation_type) VALUES (?, ?, ?)",
         (chunk_id, block_id, relation_type),
     )
+
+
+def insert_task(
+    conn: sqlite3.Connection, task_id=None, task_type="import", state="queued",
+    stage=None, kb_id=None, document_id=None, document_version_id=None,
+    index_version_id=None, idempotency_key=None, parent_task_id=None,
+    retry_origin=None, progress=0.0, priority=0,
+) -> str:
+    """插入任务行，返回 id"""
+    task_id = task_id or uuid7()
+    conn.execute(
+        "INSERT INTO tasks"
+        " (id, task_type, knowledge_base_id, document_id, document_version_id,"
+        "  index_version_id, state, stage, progress, priority, idempotency_key,"
+        "  retry_count, max_retries, attempt_count, stage_attempt, total_attempt_count,"
+        "  next_retry_at, lease_owner, lease_expires_at, heartbeat_at,"
+        "  cancel_requested_at, checkpoint_json, parent_task_id, retry_origin,"
+        "  error_code, error_message, input_json, created_at, started_at, finished_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 3, 0, 0, 0,"
+        "  NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL, ?, NULL, NULL)",
+        (
+            task_id, task_type, kb_id, document_id, document_version_id,
+            index_version_id, state, stage, progress, priority, idempotency_key,
+            parent_task_id, retry_origin, FIXED_TIME,
+        ),
+    )
+    return task_id
+
+
+def insert_task_event(
+    conn: sqlite3.Connection, task_id, event_type="state_changed", state="queued",
+    stage=None, error_code=None, created_at=FIXED_TIME,
+) -> str:
+    """插入任务审计事件行，返回 id"""
+    event_id = uuid7()
+    conn.execute(
+        "INSERT INTO task_events"
+        " (id, task_id, event_type, state, stage, attempt_count, worker,"
+        "  created_at, duration_ms, checkpoint_json, error_code, detail_json)"
+        " VALUES (?, ?, ?, ?, ?, 0, NULL, ?, NULL, NULL, ?, NULL)",
+        (event_id, task_id, event_type, state, stage, created_at, error_code),
+    )
+    return event_id
+
+
+def insert_external_task(
+    conn: sqlite3.Connection, task_id, provider="mineru", provider_batch_ref="batch-1",
+    source_ref="source-1", provider_task_id=None, state="submitted",
+) -> str:
+    """插入外部任务行，返回 id"""
+    external_id = uuid7()
+    conn.execute(
+        "INSERT INTO external_tasks"
+        " (id, task_id, provider, provider_batch_ref, source_ref, provider_task_id,"
+        "  upload_url_expires_at, remote_cancel_state, provider_status_summary,"
+        "  state, poll_count, last_polled_at, request_summary_json,"
+        "  result_uri, result_sha256, expires_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, 0, NULL, NULL, NULL, NULL, NULL)",
+        (external_id, task_id, provider, provider_batch_ref, source_ref,
+         provider_task_id, state),
+    )
+    return external_id
