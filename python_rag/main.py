@@ -177,12 +177,21 @@ from langchain_core.embeddings import Embeddings
 from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
 # 工作台 v1 运行时：SQLite 事实源 + 任务化导入（/api/v1）
 from app.api.v1 import ApiV1Dependencies, create_api_router
+from app.domain.ids import uuid7
 from app.infrastructure.ingest import ImportOrchestrator
+from app.infrastructure.mineru import MinerUClient
 from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.migrations import apply_migrations
 from app.infrastructure.sqlite.repositories.import_repository import SQLiteImportRepository
+from app.infrastructure.sqlite.repositories import (
+    SQLiteContentRepository,
+    SQLiteDocumentRepository,
+    SQLiteDocumentVersionRepository,
+    SQLiteExternalTaskRepository,
+)
 from app.infrastructure.sqlite.repositories.task_repository import SQLiteTaskRepository
 from app.infrastructure.storage.upload_staging import UploadStagingStore
+from app.infrastructure.worker import ImportTaskWorker
 # 导入 LLM 封装类（支持网络模型和本地 Ollama 模型）
 from llm_wrapper import LLMWrapper, LLMProviderType, DEFAULT_NETWORK_MODEL, DEFAULT_LOCAL_MODEL
 # 导入 LangChain 的提示词模板，用于构建对话提示
@@ -649,6 +658,31 @@ _workbench_orchestrator = ImportOrchestrator(
     import_repo=SQLiteImportRepository(_workbench_conn),
 )
 _workbench_task_repo = SQLiteTaskRepository(_workbench_conn)
+
+# 解析 Worker：单线程消费导入任务（解析结果落库的唯一写入方）。
+# 默认启用，WORKBENCH_WORKER_ENABLED 设为 0/false/off 关闭；关闭时
+# 导入任务停留在队列，由下次启动的恢复流程继续推进。云端解析令牌
+# 缺失时 Worker 仍消费本地路线，云端任务在提交时按认证失败处理
+_import_worker: ImportTaskWorker | None = None
+if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "false", "off"):
+    _mineru_token = os.getenv("MINERU_API_TOKEN") or ""
+    _import_worker = ImportTaskWorker(
+        task_repo=_workbench_task_repo,
+        document_repo=SQLiteDocumentRepository(_workbench_conn),
+        version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
+        content_repo=SQLiteContentRepository(_workbench_conn),
+        external_repo=SQLiteExternalTaskRepository(_workbench_conn),
+        mineru_client=MinerUClient(api_token=_mineru_token) if _mineru_token else None,
+        work_dir=os.path.join(WORKBENCH_STAGING_DIR, "cloud_results"),
+        worker_id=f"worker-{uuid7()}",
+    )
+    _import_worker.start_background()
+
+    @app.on_event("shutdown")
+    def _stop_import_worker() -> None:
+        """应用关闭时请求 Worker 停止：进行中的轮询在下一个等待间隔内退出"""
+        if _import_worker is not None:
+            _import_worker.stop()
 
 app.include_router(
     create_api_router(

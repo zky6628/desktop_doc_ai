@@ -99,6 +99,35 @@ def test_running_without_lease_treated_as_stale(task_repo):
     assert repo.get(claimed.id).state is TaskStatus.QUEUED
 
 
+def test_stale_waiting_external_requeued_for_poll_resume(task_repo):
+    """等待外部结果的任务租约失效后重排回排队：阶段保留供续跑轮询"""
+    repo, conn, _ = task_repo
+    task = _claimed_task(repo)
+    repo.transition(task.id, TaskStatus.WAITING_EXTERNAL, stage=TaskStage.POLLING_CLOUD)
+    _backdate_lease(conn, task.id, seconds_ago=31)
+
+    assert repo.recover_interrupted_tasks()["stale_running_requeued"] == 1
+
+    loaded = repo.get(task.id)
+    assert loaded.state is TaskStatus.QUEUED
+    assert loaded.stage is TaskStage.POLLING_CLOUD
+    assert loaded.lease_owner is None
+    assert loaded.lease_expires_at is None
+
+    # 幂等：重复恢复不再产生变化
+    assert repo.recover_interrupted_tasks()["stale_running_requeued"] == 0
+
+
+def test_waiting_external_within_grace_or_valid_lease_kept(task_repo):
+    """等待外部结果的任务租约未失效时不被重排"""
+    repo, _, _ = task_repo
+    task = _claimed_task(repo)
+    repo.transition(task.id, TaskStatus.WAITING_EXTERNAL, stage=TaskStage.POLLING_CLOUD)
+
+    assert repo.requeue_stale_running() == 0
+    assert repo.get(task.id).state is TaskStatus.WAITING_EXTERNAL
+
+
 def test_stale_cancel_request_finished_directly(task_repo):
     """等待取消但租约已失效：恢复流程直接收尾为取消终态"""
     repo, conn, _ = task_repo

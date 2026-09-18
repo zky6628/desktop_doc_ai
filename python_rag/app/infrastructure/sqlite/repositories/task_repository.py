@@ -637,11 +637,18 @@ class SQLiteTaskRepository(TaskRepositoryPort):
     def requeue_stale_running(self) -> int:
         def _requeue(conn) -> int:
             now = utc_now_iso()
+            # 执行中与等待外部结果的任务同等待遇：租约失效（Worker 失联）
+            # 即重排回排队。等待外部结果的任务恢复后按既有批次续跑轮询，
+            # 不重复提交批次（批次事实持久化在外部任务表中）
             rows = conn.execute(
                 "SELECT id, stage, attempt_count, checkpoint_json, lease_owner"
-                " FROM tasks WHERE state = ?"
+                " FROM tasks WHERE state IN (?, ?)"
                 " AND (lease_expires_at IS NULL OR lease_expires_at < ?)",
-                (TaskStatus.RUNNING.value, _stale_lease_cutoff_iso()),
+                (
+                    TaskStatus.RUNNING.value,
+                    TaskStatus.WAITING_EXTERNAL.value,
+                    _stale_lease_cutoff_iso(),
+                ),
             ).fetchall()
             for row in rows:
                 # 仅清理租约并回到排队：处理阶段、进度、checkpoint 与

@@ -19,6 +19,7 @@ from .entities import (
     TaskStatus,
 )
 from .ingest import ImportOutcome
+from .parsing import ParsedDocument
 
 
 class KnowledgeBaseRepository(ABC):
@@ -99,6 +100,20 @@ class DocumentVersionRepository(ABC):
     def list_by_document(self, document_id: str) -> list[DocumentVersion]:
         """列出文档全部版本（按版本号升序）"""
 
+    @abstractmethod
+    def mark_parsed(
+        self,
+        version_id: str,
+        *,
+        parsed_content_sha256: str,
+        parser_provider: str,
+        parser_version: str,
+    ) -> DocumentVersion:
+        """回写解析结果：状态置为 parsed，记录解析内容哈希与解析器身份。
+
+        解析内容哈希为统一解析模型即时复算的结构哈希；版本不存在抛
+        EntityNotFoundError"""
+
 
 class IndexVersionRepository(ABC):
     """索引版本仓储"""
@@ -127,6 +142,20 @@ class IndexVersionRepository(ABC):
         全过程单事务且校验双向一致。失败场景：
         目标不存在抛 EntityNotFoundError；状态为 retired/failed 抛
         ActivationError；事务内任一步失败整体回滚。"""
+
+
+class ContentRepository(ABC):
+    """内容仓储：解析产物事实（内容块与表格证据）的持久化"""
+
+    @abstractmethod
+    def replace_document_content(
+        self, document_version_id: str, parsed: ParsedDocument
+    ) -> int:
+        """把统一解析模型整体落库为该版本的解析事实（幂等重建）
+
+        单事务内先删除该版本的表格证据与内容块，再按块序写入：
+        同一版本重放不产生重复块。返回写入的块数。版本不存在抛
+        EntityNotFoundError"""
 
 
 class ImportRepository(ABC):
@@ -355,9 +384,9 @@ class TaskRepository(ABC):
 
     @abstractmethod
     def requeue_stale_running(self) -> int:
-        """把租约已失效（超过接管宽限或缺失）的执行中任务重排回排队：
-        仅清理租约与状态，处理阶段、进度、checkpoint 与执行计数全部
-        保留，重新领取后从断点继续；返回重排数量"""
+        """把租约已失效（超过接管宽限或缺失）的执行中与等待外部结果
+        任务重排回排队：仅清理租约与状态，处理阶段、进度、checkpoint
+        与执行计数全部保留，重新领取后从断点继续；返回重排数量"""
 
     @abstractmethod
     def finish_stale_cancel_requests(self) -> int:

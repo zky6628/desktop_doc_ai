@@ -8,6 +8,17 @@ from app.domain.ports import DocumentVersionRepository as DocumentVersionReposit
 
 from ..transactions import run_in_transaction
 
+# 版本生命周期状态：导入建立时为 pending（见导入仓储），
+# 解析事实回写后为 parsed
+_VERSION_STATUS_PARSED = "parsed"
+
+# 版本列的读取顺序（与 _to_entity 一一对应）
+_VERSION_COLUMNS = (
+    "id, document_id, version_no, source_path, source_sha256, mime_type,"
+    " size_bytes, parser_mode, parser_provider, parser_version,"
+    " parsed_content_sha256, status, active_index_version_id, created_at, activated_at"
+)
+
 
 class SQLiteDocumentVersionRepository(DocumentVersionRepositoryPort):
     """document_versions 表的仓储实现
@@ -78,24 +89,50 @@ class SQLiteDocumentVersionRepository(DocumentVersionRepositoryPort):
 
     def get(self, version_id: str) -> DocumentVersion | None:
         row = self._conn.execute(
-            "SELECT id, document_id, version_no, source_path, source_sha256, mime_type,"
-            " size_bytes, parser_mode, parser_provider, parser_version,"
-            " parsed_content_sha256, status, active_index_version_id, created_at, activated_at"
-            " FROM document_versions WHERE id = ?",
+            f"SELECT {_VERSION_COLUMNS} FROM document_versions WHERE id = ?",
             (version_id,),
         ).fetchone()
         return self._to_entity(row) if row is not None else None
 
     def list_by_document(self, document_id: str) -> list:
         rows = self._conn.execute(
-            "SELECT id, document_id, version_no, source_path, source_sha256, mime_type,"
-            " size_bytes, parser_mode, parser_provider, parser_version,"
-            " parsed_content_sha256, status, active_index_version_id, created_at, activated_at"
-            " FROM document_versions WHERE document_id = ?"
-            " ORDER BY version_no",
+            f"SELECT {_VERSION_COLUMNS} FROM document_versions"
+            " WHERE document_id = ? ORDER BY version_no",
             (document_id,),
         ).fetchall()
         return [self._to_entity(row) for row in rows]
+
+    def mark_parsed(
+        self,
+        version_id: str,
+        *,
+        parsed_content_sha256: str,
+        parser_provider: str,
+        parser_version: str,
+    ) -> DocumentVersion:
+        """回写解析结果（方法契约见领域 Port 定义）"""
+
+        def _mark(conn) -> DocumentVersion:
+            exists = conn.execute(
+                "SELECT 1 FROM document_versions WHERE id = ?", (version_id,)
+            ).fetchone()
+            if exists is None:
+                raise EntityNotFoundError(f"文档版本不存在: {version_id}")
+            conn.execute(
+                "UPDATE document_versions SET status = ?, parsed_content_sha256 = ?,"
+                " parser_provider = ?, parser_version = ? WHERE id = ?",
+                (
+                    _VERSION_STATUS_PARSED, parsed_content_sha256,
+                    parser_provider, parser_version, version_id,
+                ),
+            )
+            updated = conn.execute(
+                f"SELECT {_VERSION_COLUMNS} FROM document_versions WHERE id = ?",
+                (version_id,),
+            ).fetchone()
+            return self._to_entity(updated)
+
+        return run_in_transaction(self._conn, _mark, f"回写版本解析结果 {version_id}")
 
     @staticmethod
     def _to_entity(row) -> DocumentVersion:

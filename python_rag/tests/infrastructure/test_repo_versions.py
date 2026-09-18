@@ -66,6 +66,45 @@ def test_create_version_in_missing_document_rejected(repos):
         )
 
 
+def test_mark_parsed_writes_back_parsing_facts(repos):
+    """解析结果回写：待解析版本置为 parsed，哈希与解析器身份落库"""
+    repositories, conn = repos
+    version_id, _ = _make_document(repositories)
+    # 模拟导入建立时的待解析状态
+    conn.execute(
+        "UPDATE document_versions SET status = 'pending' WHERE id = ?",
+        (version_id,),
+    )
+
+    marked = repositories["versions"].mark_parsed(
+        version_id,
+        parsed_content_sha256="c" * 64,
+        parser_provider="local",
+        parser_version="1.0.0",
+    )
+
+    assert marked.status == "parsed"
+    assert marked.parsed_content_sha256 == "c" * 64
+    assert marked.parser_provider == "local"
+    assert marked.parser_version == "1.0.0"
+
+    loaded = repositories["versions"].get(version_id)
+    assert loaded.status == "parsed"
+    assert loaded.parsed_content_sha256 == "c" * 64
+
+
+def test_mark_parsed_missing_version_rejected(repos):
+    """版本不存在时回写解析结果抛领域错误"""
+    repositories, _ = repos
+    with pytest.raises(EntityNotFoundError):
+        repositories["versions"].mark_parsed(
+            "01900000-0000-7000-8000-000000000000",
+            parsed_content_sha256="c" * 64,
+            parser_provider="local",
+            parser_version="1.0.0",
+        )
+
+
 def test_activate_switches_active_and_backfills_pointer(repos):
     """激活事务：新索引激活、旧索引退役、文档版本指针回填并双向一致"""
     repositories, _ = repos
