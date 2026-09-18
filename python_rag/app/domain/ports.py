@@ -171,3 +171,40 @@ class TaskRepository(ABC):
     @abstractmethod
     def list_events(self, task_id: str) -> list[TaskEvent]:
         """按写入顺序读取任务的全部审计事件"""
+
+    @abstractmethod
+    def claim_next(
+        self, worker_id: str, task_type: str | None = None
+    ) -> Task | None:
+        """领取下一个可执行任务：单事务内按有效租约计数（running 与
+        cancel_requested 中租约未过期者）少于执行上限时，选取 priority
+        降序、created_at 升序的首个 queued 任务，写入租约与执行计数并
+        置为 running；无排队任务或无空闲执行许可时返回 None"""
+
+    @abstractmethod
+    def heartbeat(self, task_id: str, worker_id: str) -> Task:
+        """Worker 心跳续约：持有者匹配且租约未过期时延长到期时间并
+        刷新心跳时间；租约丢失抛 TaskLeaseLostError，
+        任务不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def update_stage(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        stage: TaskStage,
+        progress: float | None = None,
+        checkpoint_json: str | None = None,
+    ) -> Task:
+        """租约守卫的阶段推进写入：进入与当前不同的阶段时 stage_attempt
+        置 1（新阶段开始执行），同阶段保持不变；progress 与 checkpoint
+        提供时写入。租约丢失抛 TaskLeaseLostError"""
+
+    @abstractmethod
+    def complete_stage(
+        self, task_id: str, worker_id: str, *, stage: TaskStage
+    ) -> Task:
+        """租约守卫的阶段完成：当前阶段与目标一致时 stage_attempt 归零，
+        阶段推进由后续写入表达；阶段不匹配抛 TaskStateConflictError，
+        租约丢失抛 TaskLeaseLostError"""

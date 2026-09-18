@@ -149,7 +149,7 @@ def insert_task(
     conn: sqlite3.Connection, task_id=None, task_type="import", state="queued",
     stage=None, kb_id=None, document_id=None, document_version_id=None,
     index_version_id=None, idempotency_key=None, parent_task_id=None,
-    retry_origin=None, progress=0.0, priority=0,
+    retry_origin=None, progress=0.0, priority=0, created_at=FIXED_TIME,
 ) -> str:
     """插入任务行，返回 id"""
     task_id = task_id or uuid7()
@@ -166,7 +166,7 @@ def insert_task(
         (
             task_id, task_type, kb_id, document_id, document_version_id,
             index_version_id, state, stage, progress, priority, idempotency_key,
-            parent_task_id, retry_origin, FIXED_TIME,
+            parent_task_id, retry_origin, created_at,
         ),
     )
     return task_id

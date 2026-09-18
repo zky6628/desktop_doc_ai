@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """任务仓储的 SQLite 实现（原子容量检查、幂等创建与状态机迁移）"""
 import json
+from datetime import datetime, timedelta, timezone
 
 from app.domain import task_state
 from app.domain.clock import utc_now_iso
 from app.domain.entities import Task, TaskEvent, TaskStage, TaskStatus
 from app.domain.errors import (
     EntityNotFoundError,
+    TaskLeaseLostError,
     TaskQueueFullError,
     TaskStateConflictError,
 )
@@ -40,6 +42,13 @@ _EVENT_COLUMNS = (
     "id, task_id, event_type, state, stage, attempt_count, worker,"
     " created_at, duration_ms, checkpoint_json, error_code, detail_json"
 )
+
+
+def _lease_expiry_iso(seconds: int) -> str:
+    """返回当前 UTC 时间加上指定秒数后的 ISO-8601 文本（与时间戳字段同格式）"""
+    return (
+        datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    ).isoformat(timespec="seconds")
 
 
 class SQLiteTaskRepository(TaskRepositoryPort):
@@ -214,6 +223,146 @@ class SQLiteTaskRepository(TaskRepositoryPort):
             (task_id,),
         ).fetchall()
         return [self._event_to_entity(row) for row in rows]
+
+    def claim_next(
+        self, worker_id: str, task_type: str | None = None
+    ) -> Task | None:
+        def _claim(conn) -> Task | None:
+            now = utc_now_iso()
+            # 物理执行许可按有效租约计数：running 与 cancel_requested 中
+            # 租约未过期者都占用许可；租约已过期（Worker 失联）或等待
+            # 外部结果等不持租约的状态不占用，不能只统计 state=running
+            effective_leases = conn.execute(
+                "SELECT COUNT(*) FROM tasks"
+                " WHERE state IN (?, ?)"
+                " AND lease_expires_at IS NOT NULL AND lease_expires_at > ?",
+                (TaskStatus.RUNNING.value, TaskStatus.CANCEL_REQUESTED.value, now),
+            ).fetchone()[0]
+            if effective_leases >= task_state.MAX_RUNNING:
+                return None
+
+            if task_type is None:
+                row = conn.execute(
+                    f"SELECT {_TASK_COLUMNS} FROM tasks WHERE state = ?"
+                    " ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1",
+                    (TaskStatus.QUEUED.value,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    f"SELECT {_TASK_COLUMNS} FROM tasks"
+                    " WHERE state = ? AND task_type = ?"
+                    " ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1",
+                    (TaskStatus.QUEUED.value, task_type),
+                ).fetchone()
+            if row is None:
+                return None
+
+            task = self._to_entity(row)
+            conn.execute(
+                "UPDATE tasks SET state = ?, lease_owner = ?, lease_expires_at = ?,"
+                " heartbeat_at = ?, attempt_count = attempt_count + 1,"
+                " total_attempt_count = total_attempt_count + 1,"
+                " started_at = COALESCE(started_at, ?)"
+                " WHERE id = ?",
+                (
+                    TaskStatus.RUNNING.value, worker_id,
+                    _lease_expiry_iso(task_state.LEASE_DURATION_SECONDS),
+                    now, now, task.id,
+                ),
+            )
+            self._insert_event(
+                conn,
+                task_id=task.id,
+                event_type=_EVENT_STATE_CHANGED,
+                state=TaskStatus.RUNNING,
+                stage=task.stage,
+                attempt_count=task.attempt_count + 1,
+                worker=worker_id,
+                created_at=now,
+            )
+            return self._to_entity(self._get_row(conn, task.id))
+
+        return run_in_transaction(self._conn, _claim, f"领取任务 {worker_id}")
+
+    def heartbeat(self, task_id: str, worker_id: str) -> Task:
+        def _heartbeat(conn) -> Task:
+            self._require_leased_task(conn, task_id, worker_id)
+            conn.execute(
+                "UPDATE tasks SET lease_expires_at = ?, heartbeat_at = ?"
+                " WHERE id = ?",
+                (_lease_expiry_iso(task_state.LEASE_DURATION_SECONDS),
+                 utc_now_iso(), task_id),
+            )
+            return self._to_entity(self._get_row(conn, task_id))
+
+        return run_in_transaction(self._conn, _heartbeat, f"任务心跳 {task_id}")
+
+    def update_stage(
+        self,
+        task_id: str,
+        worker_id: str,
+        *,
+        stage: TaskStage,
+        progress: float | None = None,
+        checkpoint_json: str | None = None,
+    ) -> Task:
+        def _update(conn) -> Task:
+            task = self._require_leased_task(conn, task_id, worker_id)
+            # 进入与当前不同的阶段视为新阶段开始执行；同阶段重复上报
+            # （如批次间进度刷新）不改变执行计数
+            stage_attempt = 1 if task.stage != stage else task.stage_attempt
+            conn.execute(
+                "UPDATE tasks SET stage = ?, stage_attempt = ?,"
+                " progress = COALESCE(?, progress),"
+                " checkpoint_json = COALESCE(?, checkpoint_json)"
+                " WHERE id = ?",
+                (stage.value, stage_attempt, progress, checkpoint_json, task_id),
+            )
+            return self._to_entity(self._get_row(conn, task_id))
+
+        return run_in_transaction(
+            self._conn, _update, f"更新任务阶段 {task_id}"
+        )
+
+    def complete_stage(
+        self, task_id: str, worker_id: str, *, stage: TaskStage
+    ) -> Task:
+        def _complete(conn) -> Task:
+            task = self._require_leased_task(conn, task_id, worker_id)
+            if task.stage != stage:
+                raise TaskStateConflictError(
+                    f"任务 {task_id} 当前阶段为"
+                    f" {task.stage.value if task.stage else '无'}，"
+                    f"与完成目标 {stage.value} 不一致"
+                )
+            # 阶段成功后执行计数归零；下一阶段的开始由后续阶段写入表达
+            conn.execute(
+                "UPDATE tasks SET stage_attempt = 0 WHERE id = ?", (task_id,)
+            )
+            return self._to_entity(self._get_row(conn, task_id))
+
+        return run_in_transaction(
+            self._conn, _complete, f"完成任务阶段 {task_id}"
+        )
+
+    @staticmethod
+    def _require_leased_task(conn, task_id: str, worker_id: str) -> Task:
+        """读取任务并校验租约：任务存在、持有者匹配且租约未过期。
+
+        过期判断基于 UTC 文本比较（时间字段统一为同时刻区格式的
+        ISO-8601，字典序即时间序）
+        """
+        row = SQLiteTaskRepository._get_row(conn, task_id)
+        if row is None:
+            raise EntityNotFoundError(f"任务不存在: {task_id}")
+        task = SQLiteTaskRepository._to_entity(row)
+        if (
+            task.lease_owner != worker_id
+            or task.lease_expires_at is None
+            or task.lease_expires_at <= utc_now_iso()
+        ):
+            raise TaskLeaseLostError(f"任务 {task_id} 租约无效或已丢失")
+        return task
 
     def _record_rejected_transition(self, task: Task, target_state: TaskStatus) -> None:
         """把被拒绝的迁移作为审计事件落库（独立事务，不随异常回滚）"""

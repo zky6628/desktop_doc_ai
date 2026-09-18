@@ -32,3 +32,7 @@ class TaskQueueFullError(RepositoryError):
 
 class TaskStateConflictError(RepositoryError):
     """任务状态迁移不被状态机允许（含终态再迁移与自迁移）"""
+
+
+class TaskLeaseLostError(RepositoryError):
+    """任务租约无效：未持有租约、持有者不匹配或租约已过期"""

@@ -63,6 +63,13 @@ MAX_RUNNING = 3
 MAX_PENDING = 50
 MAX_NON_TERMINAL = 53
 
+# Worker 租约固定参数：租约时长、心跳间隔与接管宽限。
+# 心跳间隔由 Worker 侧遵守（远小于租约时长，正常执行不会失约）；
+# 接管宽限供重启恢复判定过期任务何时可被重新排队
+LEASE_DURATION_SECONDS = 60
+HEARTBEAT_INTERVAL_SECONDS = 15
+TAKEOVER_GRACE_SECONDS = 30
+
 
 def require_valid_transition(current: TaskStatus, target: TaskStatus) -> None:
     """校验状态迁移合法性，非法时抛出状态冲突错误
