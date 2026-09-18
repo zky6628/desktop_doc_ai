@@ -51,6 +51,18 @@ def _lease_expiry_iso(seconds: int) -> str:
     ).isoformat(timespec="seconds")
 
 
+def _stale_lease_cutoff_iso() -> str:
+    """租约失效判定阈值：当前时间减去接管宽限。
+
+    早于该时刻过期的租约才视为持有者已失联，避免把仍在执行、
+    只是两次心跳间隔偏大的 Worker 误判为中断而造成重复执行
+    """
+    return (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=task_state.TAKEOVER_GRACE_SECONDS)
+    ).isoformat(timespec="seconds")
+
+
 class SQLiteTaskRepository(TaskRepositoryPort):
     """tasks / task_events 表的仓储实现
 
@@ -567,6 +579,97 @@ class SQLiteTaskRepository(TaskRepositoryPort):
             parent_task_id=old.id,
             retry_origin="manual",
         )
+
+    def requeue_stale_running(self) -> int:
+        def _requeue(conn) -> int:
+            now = utc_now_iso()
+            rows = conn.execute(
+                "SELECT id, stage, attempt_count, checkpoint_json, lease_owner"
+                " FROM tasks WHERE state = ?"
+                " AND (lease_expires_at IS NULL OR lease_expires_at < ?)",
+                (TaskStatus.RUNNING.value, _stale_lease_cutoff_iso()),
+            ).fetchall()
+            for row in rows:
+                # 仅清理租约并回到排队：处理阶段、进度、checkpoint 与
+                # 执行计数全部保留，重新领取后从最近断点继续
+                conn.execute(
+                    "UPDATE tasks SET state = ?, lease_owner = NULL,"
+                    " lease_expires_at = NULL, heartbeat_at = NULL WHERE id = ?",
+                    (TaskStatus.QUEUED.value, row[0]),
+                )
+                self._insert_event(
+                    conn,
+                    task_id=row[0],
+                    event_type=_EVENT_STATE_CHANGED,
+                    state=TaskStatus.QUEUED,
+                    stage=TaskStage(row[1]) if row[1] is not None else None,
+                    attempt_count=row[2],
+                    worker=None,
+                    created_at=now,
+                    checkpoint_json=row[3],
+                    detail_json=json.dumps(
+                        {"interrupted": True, "lease_owner": row[4]},
+                        ensure_ascii=False,
+                    ),
+                )
+            return len(rows)
+
+        return run_in_transaction(self._conn, _requeue, "重排中断执行任务")
+
+    def finish_stale_cancel_requests(self) -> int:
+        def _finish(conn) -> int:
+            now = utc_now_iso()
+            rows = conn.execute(
+                "SELECT id, stage, attempt_count, checkpoint_json,"
+                " cancel_requested_at FROM tasks WHERE state = ?"
+                " AND (lease_expires_at IS NULL OR lease_expires_at < ?)",
+                (TaskStatus.CANCEL_REQUESTED.value, _stale_lease_cutoff_iso()),
+            ).fetchall()
+            for row in rows:
+                # 原 Worker 已失联，无法到达检查点收尾：由恢复流程
+                # 直接完成取消（staging 物理清理由后续清理任务承担）
+                conn.execute(
+                    "UPDATE tasks SET state = ?, finished_at = ?,"
+                    " lease_owner = NULL, lease_expires_at = NULL,"
+                    " heartbeat_at = NULL WHERE id = ?",
+                    (TaskStatus.CANCELLED.value, now, row[0]),
+                )
+                self._insert_event(
+                    conn,
+                    task_id=row[0],
+                    event_type=_EVENT_STATE_CHANGED,
+                    state=TaskStatus.CANCELLED,
+                    stage=TaskStage(row[1]) if row[1] is not None else None,
+                    attempt_count=row[2],
+                    worker=None,
+                    created_at=now,
+                    checkpoint_json=row[3],
+                    detail_json=json.dumps(
+                        {
+                            "finished_by_recovery": True,
+                            "cancel_requested_at": row[4],
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+            return len(rows)
+
+        return run_in_transaction(self._conn, _finish, "收尾失效取消请求")
+
+    def recover_interrupted_tasks(self) -> dict[str, int]:
+        """恢复被中断的任务，返回各类处理数量。
+
+        供进程启动时与周期巡检调用；三个动作各自单事务且均可重复
+        执行（幂等），重复调用时未变化的部分返回 0
+        """
+        promoted = self.promote_due_retries()
+        requeued = self.requeue_stale_running()
+        finished = self.finish_stale_cancel_requests()
+        return {
+            "retries_promoted": promoted,
+            "stale_running_requeued": requeued,
+            "stale_cancels_finished": finished,
+        }
 
     @staticmethod
     def _require_leased_task(conn, task_id: str, worker_id: str) -> Task:

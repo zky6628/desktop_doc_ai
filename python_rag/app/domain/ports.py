@@ -262,3 +262,19 @@ class TaskRepository(ABC):
         manual 标记）的新任务并继承类型/引用/优先级/输入与重试预算，
         原任务保持终态；容量满抛 TaskQueueFullError；
         非失败状态抛 TaskStateConflictError"""
+
+    @abstractmethod
+    def requeue_stale_running(self) -> int:
+        """把租约已失效（超过接管宽限或缺失）的执行中任务重排回排队：
+        仅清理租约与状态，处理阶段、进度、checkpoint 与执行计数全部
+        保留，重新领取后从断点继续；返回重排数量"""
+
+    @abstractmethod
+    def finish_stale_cancel_requests(self) -> int:
+        """把等待取消但租约已失效的任务直接转入取消终态（原 Worker
+        已无法到达检查点）：回填完成时间并释放租约；返回收尾数量"""
+
+    @abstractmethod
+    def recover_interrupted_tasks(self) -> dict[str, int]:
+        """恢复被中断的任务（进程启动时与周期巡检调用，可重复执行）：
+        提升到期重试、重排失效执行、收尾失效取消，返回各类处理数量"""
