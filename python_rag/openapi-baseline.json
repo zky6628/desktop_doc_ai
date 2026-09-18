@@ -1,0 +1,705 @@
+{
+  "components": {
+    "schemas": {
+      "AddFileRequest": {
+        "description": "添加文件请求模型（通过本地路径）",
+        "properties": {
+          "file_path": {
+            "description": "文件的本地绝对路径",
+            "title": "File Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
+        ],
+        "title": "AddFileRequest",
+        "type": "object"
+      },
+      "AddTextsRequest": {
+        "description": "添加文本请求模型",
+        "properties": {
+          "metadatas": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "元数据列表",
+            "title": "Metadatas"
+          },
+          "texts": {
+            "description": "文本列表",
+            "items": {
+              "type": "string"
+            },
+            "title": "Texts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "texts"
+        ],
+        "title": "AddTextsRequest",
+        "type": "object"
+      },
+      "Body_upload_file_upload_file_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_file_upload_file_post",
+        "type": "object"
+      },
+      "DeleteByIdsRequest": {
+        "description": "按ID删除请求模型",
+        "properties": {
+          "ids": {
+            "description": "文档ID列表",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "DeleteByIdsRequest",
+        "type": "object"
+      },
+      "DeleteBySourceRequest": {
+        "description": "按源文件路径删除请求模型",
+        "properties": {
+          "source": {
+            "description": "源文件路径（metadata 中的 source 字段）",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "DeleteBySourceRequest",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "QueryRequest": {
+        "description": "RAG 问答请求模型",
+        "properties": {
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "模型 ID（可选，不指定则使用默认模型）",
+            "title": "Model Id"
+          },
+          "question": {
+            "description": "用户的问题",
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "QueryRequest",
+        "type": "object"
+      },
+      "SearchRequest": {
+        "description": "相似度检索请求模型",
+        "properties": {
+          "k": {
+            "default": 3,
+            "description": "返回结果数量",
+            "title": "K",
+            "type": "integer"
+          },
+          "query": {
+            "description": "查询文本",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "type": "object"
+      },
+      "UpdateTextRequest": {
+        "description": "更新文档请求模型",
+        "properties": {
+          "id": {
+            "description": "文档ID",
+            "title": "Id",
+            "type": "string"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "新的元数据",
+            "title": "Metadata"
+          },
+          "text": {
+            "description": "新的文本内容",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "UpdateTextRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "基于 LangChain + ChromaDB + Qwen 的文档智能问答服务",
+    "title": "RAG Document AI API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/": {
+      "get": {
+        "description": "根路径，返回服务信息",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Root",
+        "tags": [
+          "系统"
+        ]
+      }
+    },
+    "/add_file": {
+      "post": {
+        "description": "添加本地文件到知识库（增量更新）\n传入文件的本地绝对路径，若该文件已存在则先删除旧文档再重新添加",
+        "operationId": "add_file_add_file_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddFileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add File",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/add_texts": {
+      "post": {
+        "description": "批量添加文本到知识库",
+        "operationId": "add_texts_add_texts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddTextsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Texts",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/count": {
+      "get": {
+        "description": "获取知识库文档总数",
+        "operationId": "get_count_count_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Count",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/delete_all": {
+      "post": {
+        "description": "清空知识库所有文档",
+        "operationId": "delete_all_delete_all_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete All",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/delete_by_ids": {
+      "post": {
+        "description": "按文档ID删除",
+        "operationId": "delete_by_ids_delete_by_ids_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteByIdsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete By Ids",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/delete_by_source": {
+      "post": {
+        "description": "按源文件路径删除关联的所有文档",
+        "operationId": "delete_by_source_delete_by_source_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteBySourceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete By Source",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/get_all": {
+      "get": {
+        "description": "获取知识库所有文档",
+        "operationId": "get_all_get_all_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get All",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/models": {
+      "get": {
+        "description": "获取可用模型列表",
+        "operationId": "get_models_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Models",
+        "tags": [
+          "系统"
+        ]
+      }
+    },
+    "/ping": {
+      "get": {
+        "description": "健康检查接口",
+        "operationId": "ping_ping_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ping",
+        "tags": [
+          "系统"
+        ]
+      }
+    },
+    "/query": {
+      "post": {
+        "description": "RAG 智能问答接口\n传入问题，返回答案、参考来源和耗时统计",
+        "operationId": "query_rag_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Query Rag",
+        "tags": [
+          "RAG 问答"
+        ]
+      }
+    },
+    "/reload_knowledge": {
+      "post": {
+        "description": "重新加载默认知识库文件",
+        "operationId": "reload_knowledge_reload_knowledge_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reload Knowledge",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/search": {
+      "post": {
+        "description": "相似度检索接口\n传入查询文本，返回最相关的文档片段",
+        "operationId": "search_docs_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Docs",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/update_text": {
+      "post": {
+        "description": "更新指定ID的文档内容",
+        "operationId": "update_text_update_text_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Text",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    },
+    "/upload_file": {
+      "post": {
+        "description": "上传文件并添加到知识库（增量更新）\n支持 multipart/form-data 方式上传文件，若该文件已存在则先删除旧文档再重新添加",
+        "operationId": "upload_file_upload_file_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_file_upload_file_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload File",
+        "tags": [
+          "知识库管理"
+        ]
+      }
+    }
+  }
+}
