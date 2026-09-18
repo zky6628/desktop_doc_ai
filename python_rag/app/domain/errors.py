@@ -38,6 +38,10 @@ class TaskLeaseLostError(RepositoryError):
     """任务租约无效：未持有租约、持有者不匹配或租约已过期"""
 
 
+class ConfirmationConflictError(RepositoryError):
+    """云端解析确认与任务状态冲突：仅等待确认的任务可被确认"""
+
+
 class FileTooLargeError(RepositoryError):
     """上传文件超过单文件大小上限，暂存已中止且无残留"""
 

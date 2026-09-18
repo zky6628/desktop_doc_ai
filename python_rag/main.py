@@ -175,6 +175,14 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 # 导入自定义文件解析器（支持 TXT/DOCX/PDF）
 from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
+# 工作台 v1 运行时：SQLite 事实源 + 任务化导入（/api/v1）
+from app.api.v1 import ApiV1Dependencies, create_api_router
+from app.infrastructure.ingest import ImportOrchestrator
+from app.infrastructure.sqlite.connection import connect
+from app.infrastructure.sqlite.migrations import apply_migrations
+from app.infrastructure.sqlite.repositories.import_repository import SQLiteImportRepository
+from app.infrastructure.sqlite.repositories.task_repository import SQLiteTaskRepository
+from app.infrastructure.storage.upload_staging import UploadStagingStore
 # 导入 LLM 封装类（支持网络模型和本地 Ollama 模型）
 from llm_wrapper import LLMWrapper, LLMProviderType, DEFAULT_NETWORK_MODEL, DEFAULT_LOCAL_MODEL
 # 导入 LangChain 的提示词模板，用于构建对话提示
@@ -615,6 +623,40 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],  # 允许所有 HTTP 方法
     allow_headers=["*"],  # 允许所有请求头
+)
+
+
+# ===================== 工作台运行时（SQLite + 任务化导入） =====================
+
+# 业务事实库与受控暂存目录：默认位于服务目录内，可用环境变量覆盖；
+# 示例配置文件允许留空，空值与未设置同样回退默认
+WORKBENCH_DB_PATH = (
+    os.getenv("WORKBENCH_DB_PATH")
+    or os.path.join(BASE_DIR, "data", "workbench.db")
+)
+WORKBENCH_STAGING_DIR = (
+    os.getenv("WORKBENCH_STAGING_DIR")
+    or os.path.join(BASE_DIR, "uploads", "staging")
+)
+
+os.makedirs(os.path.dirname(WORKBENCH_DB_PATH), exist_ok=True)
+
+# 启动时应用数据库迁移（幂等，可重复执行），再建立连接与仓储
+apply_migrations(WORKBENCH_DB_PATH, os.path.join(BASE_DIR, "migrations"))
+_workbench_conn = connect(WORKBENCH_DB_PATH)
+_workbench_orchestrator = ImportOrchestrator(
+    staging_store=UploadStagingStore(WORKBENCH_STAGING_DIR),
+    import_repo=SQLiteImportRepository(_workbench_conn),
+)
+_workbench_task_repo = SQLiteTaskRepository(_workbench_conn)
+
+app.include_router(
+    create_api_router(
+        ApiV1Dependencies(
+            orchestrator=_workbench_orchestrator,
+            task_repo=_workbench_task_repo,
+        )
+    )
 )
 
 

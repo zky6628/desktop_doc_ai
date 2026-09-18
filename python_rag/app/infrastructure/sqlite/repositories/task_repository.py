@@ -63,6 +63,80 @@ def _stale_lease_cutoff_iso() -> str:
     ).isoformat(timespec="seconds")
 
 
+def ensure_queue_capacity(conn) -> None:
+    """校验任务队列容量（须在写事务内调用）
+
+    pending 合计与非终态合计各自不得超过上限；running 的物理执行
+    许可由领取逻辑做租约感知计数，创建阶段不拦截，因此已有 3 个
+    running 时新任务仍可创建并保持 queued 排队。
+
+    :param conn: 事务内的数据库连接
+    :raises TaskQueueFullError: 任一口径达到上限
+    """
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM tasks"
+        f" WHERE state IN ({_PENDING_STATE_PLACEHOLDERS})",
+        _PENDING_STATE_VALUES,
+    ).fetchone()[0]
+    running = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE state = ?",
+        (TaskStatus.RUNNING.value,),
+    ).fetchone()[0]
+    if pending + 1 > task_state.MAX_PENDING:
+        raise TaskQueueFullError(
+            f"任务队列已满: pending={pending}, 上限={task_state.MAX_PENDING}"
+        )
+    if running + pending + 1 > task_state.MAX_NON_TERMINAL:
+        raise TaskQueueFullError(
+            f"任务队列已满: 非终态合计={running + pending + 1},"
+            f" 上限={task_state.MAX_NON_TERMINAL}"
+        )
+
+
+def insert_task_event(
+    conn,
+    *,
+    task_id: str,
+    event_type: str,
+    state: TaskStatus,
+    stage: TaskStage | None,
+    attempt_count: int,
+    worker: str | None,
+    created_at: str,
+    duration_ms: int | None = None,
+    checkpoint_json: str | None = None,
+    error_code: str | None = None,
+    detail_json: str | None = None,
+) -> None:
+    """追加一条任务审计事件（须在事务内调用）
+
+    :param conn: 数据库连接
+    :param task_id: 所属任务 ID
+    :param event_type: 事件类型
+    :param state: 事件时刻的任务状态
+    :param stage: 事件时刻的处理阶段（可空）
+    :param attempt_count: 事件时刻的执行计数
+    :param worker: 事件时刻的租约持有者（可空）
+    :param created_at: 事件时间（UTC ISO-8601）
+    :param duration_ms: 耗时毫秒（可空）
+    :param checkpoint_json: 检查点快照（可空）
+    :param error_code: 错误码（可空）
+    :param detail_json: 脱敏详情（可空）
+    """
+    conn.execute(
+        "INSERT INTO task_events"
+        " (id, task_id, event_type, state, stage, attempt_count, worker,"
+        "  created_at, duration_ms, checkpoint_json, error_code, detail_json)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            uuid7(), task_id, event_type, state.value,
+            stage.value if stage is not None else None,
+            attempt_count, worker, created_at, duration_ms,
+            checkpoint_json, error_code, detail_json,
+        ),
+    )
+
+
 class SQLiteTaskRepository(TaskRepositoryPort):
     """tasks / task_events 表的仓储实现
 
@@ -99,28 +173,8 @@ class SQLiteTaskRepository(TaskRepositoryPort):
                     return self._to_entity(existing)
 
             # 容量检查与插入同在一个 BEGIN IMMEDIATE 事务内，写者被
-            # 串行化后读到的计数即为提交时刻事实，杜绝并发超限。
-            # running 的物理执行许可由领取逻辑做租约感知计数，
-            # 创建阶段不拦截，因此已有 3 个 running 时新任务仍可
-            # 创建并保持 queued 排队
-            pending = conn.execute(
-                "SELECT COUNT(*) FROM tasks"
-                f" WHERE state IN ({_PENDING_STATE_PLACEHOLDERS})",
-                _PENDING_STATE_VALUES,
-            ).fetchone()[0]
-            running = conn.execute(
-                "SELECT COUNT(*) FROM tasks WHERE state = ?",
-                (TaskStatus.RUNNING.value,),
-            ).fetchone()[0]
-            if pending + 1 > task_state.MAX_PENDING:
-                raise TaskQueueFullError(
-                    f"任务队列已满: pending={pending}, 上限={task_state.MAX_PENDING}"
-                )
-            if running + pending + 1 > task_state.MAX_NON_TERMINAL:
-                raise TaskQueueFullError(
-                    f"任务队列已满: 非终态合计={running + pending + 1},"
-                    f" 上限={task_state.MAX_NON_TERMINAL}"
-                )
+            # 串行化后读到的计数即为提交时刻事实，杜绝并发超限
+            ensure_queue_capacity(conn)
 
             task_id = uuid7()
             conn.execute(
@@ -772,18 +826,20 @@ class SQLiteTaskRepository(TaskRepositoryPort):
         error_code: str | None = None,
         detail_json: str | None = None,
     ) -> None:
-        """追加一条审计事件"""
-        conn.execute(
-            "INSERT INTO task_events"
-            " (id, task_id, event_type, state, stage, attempt_count, worker,"
-            "  created_at, duration_ms, checkpoint_json, error_code, detail_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                uuid7(), task_id, event_type, state.value,
-                stage.value if stage is not None else None,
-                attempt_count, worker, created_at, duration_ms,
-                checkpoint_json, error_code, detail_json,
-            ),
+        """追加一条审计事件（委托模块级共享实现，导入仓储复用同一写入）"""
+        insert_task_event(
+            conn,
+            task_id=task_id,
+            event_type=event_type,
+            state=state,
+            stage=stage,
+            attempt_count=attempt_count,
+            worker=worker,
+            created_at=created_at,
+            duration_ms=duration_ms,
+            checkpoint_json=checkpoint_json,
+            error_code=error_code,
+            detail_json=detail_json,
         )
 
     @staticmethod

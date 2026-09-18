@@ -17,6 +17,7 @@ from .entities import (
     TaskStage,
     TaskStatus,
 )
+from .ingest import ImportOutcome
 
 
 class KnowledgeBaseRepository(ABC):
@@ -125,6 +126,38 @@ class IndexVersionRepository(ABC):
         全过程单事务且校验双向一致。失败场景：
         目标不存在抛 EntityNotFoundError；状态为 retired/failed 抛
         ActivationError；事务内任一步失败整体回滚。"""
+
+
+class ImportRepository(ABC):
+    """导入仓储：单事务建立文档、文档版本与导入任务
+
+    任务队列容量检查与任务创建必须同事务：队列满时整体回滚，
+    不得留下文档或版本残留。
+    """
+
+    @abstractmethod
+    def create_import(
+        self,
+        kb_id: str,
+        *,
+        display_name: str,
+        source_path: str,
+        source_sha256: str,
+        mime_type: str | None = None,
+        size_bytes: int | None = None,
+        duplicate_policy: str = "skip",
+        task_type: str = "import",
+        parser_mode: str | None = None,
+        parser_route_json: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ImportOutcome:
+        """在知识库内完成一次单文件导入
+
+        重复内容按策略处理：skip 命中活动重复抛 DuplicateActiveContentError；
+        new_version 复用活动文档并递增版本号。幂等键已存在时直接返回
+        既有任务（不重复建立文档与版本）。知识库不存在抛
+        EntityNotFoundError；队列容量不足抛 TaskQueueFullError 且
+        无任何残留。"""
 
 
 class TaskRepository(ABC):

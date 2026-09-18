@@ -8,6 +8,7 @@ SQLite busy/locked 在本层毫秒级退避短重试，与上层业务的重试�
 无关，短重试耗尽后才转为 RepositoryError。
 """
 import sqlite3
+import threading
 import time
 
 from app.domain.errors import RepositoryError
@@ -15,6 +16,11 @@ from app.domain.errors import RepositoryError
 # busy/locked 短重试：busy_timeout 耗尽后的退避重试次数与基础间隔（秒）
 _SHORT_RETRY_ATTEMPTS = 3
 _SHORT_RETRY_BACKOFF_SECONDS = 0.05
+
+# 共享连接上的事务边界串行化锁：HTTP 端点在线程池中并发执行时，
+# BEGIN/COMMIT 不允许在共享连接上交错；锁覆盖整个事务体，桌面
+# 单用户场景下该串行化粒度与 SQLite 写锁的实际语义一致
+_TRANSACTION_LOCK = threading.Lock()
 
 
 def is_busy_error(exc: sqlite3.OperationalError) -> bool:
@@ -45,18 +51,19 @@ def run_in_transaction(conn: sqlite3.Connection, fn, label: str):
     :raises RepositoryError: busy 短重试耗尽或其他 SQL 错误
     """
     for attempt in range(1, _SHORT_RETRY_ATTEMPTS + 1):
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            result = fn(conn)
-            conn.execute("COMMIT")
-            return result
-        except sqlite3.OperationalError as exc:
-            rollback_quietly(conn)
-            if is_busy_error(exc) and attempt < _SHORT_RETRY_ATTEMPTS:
-                time.sleep(_SHORT_RETRY_BACKOFF_SECONDS * attempt)
-                continue
-            raise RepositoryError(f"{label} 失败: {exc}") from exc
-        except Exception:
-            rollback_quietly(conn)
-            raise
+        with _TRANSACTION_LOCK:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                result = fn(conn)
+                conn.execute("COMMIT")
+                return result
+            except sqlite3.OperationalError as exc:
+                rollback_quietly(conn)
+                if is_busy_error(exc) and attempt < _SHORT_RETRY_ATTEMPTS:
+                    time.sleep(_SHORT_RETRY_BACKOFF_SECONDS * attempt)
+                    continue
+                raise RepositoryError(f"{label} 失败: {exc}") from exc
+            except Exception:
+                rollback_quietly(conn)
+                raise
     raise RepositoryError(f"{label} 失败: 重试耗尽")  # pragma: no cover - 防御分支

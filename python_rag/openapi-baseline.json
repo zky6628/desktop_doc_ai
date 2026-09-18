@@ -50,6 +50,33 @@
         "title": "AddTextsRequest",
         "type": "object"
       },
+      "Body_upload_documents_api_v1_knowledge_bases__kb_id__documents_post": {
+        "properties": {
+          "duplicate_policy": {
+            "default": "skip",
+            "title": "Duplicate Policy",
+            "type": "string"
+          },
+          "files": {
+            "items": {
+              "contentMediaType": "application/octet-stream",
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "parser_preference": {
+            "default": "auto",
+            "title": "Parser Preference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "title": "Body_upload_documents_api_v1_knowledge_bases__kb_id__documents_post",
+        "type": "object"
+      },
       "Body_upload_file_upload_file_post": {
         "properties": {
           "file": {
@@ -62,6 +89,20 @@
           "file"
         ],
         "title": "Body_upload_file_upload_file_post",
+        "type": "object"
+      },
+      "CloudConfirmationRequest": {
+        "description": "云端确认请求体",
+        "properties": {
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision"
+        ],
+        "title": "CloudConfirmationRequest",
         "type": "object"
       },
       "DeleteByIdsRequest": {
@@ -339,6 +380,102 @@
         "tags": [
           "知识库管理"
         ]
+      }
+    },
+    "/api/v1/knowledge-bases/{kb_id}/documents": {
+      "post": {
+        "description": "multipart 批量上传：暂存、路由并逐文件建立版本与导入任务",
+        "operationId": "upload_documents_api_v1_knowledge_bases__kb_id__documents_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kb_id",
+            "required": true,
+            "schema": {
+              "title": "Kb Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_documents_api_v1_knowledge_bases__kb_id__documents_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Documents"
+      }
+    },
+    "/api/v1/tasks/{task_id}/cloud-confirmation": {
+      "post": {
+        "description": "对等待确认的任务执行批准（继续云端解析）或拒绝（取消）",
+        "operationId": "cloud_confirmation_api_v1_tasks__task_id__cloud_confirmation_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloudConfirmationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cloud Confirmation"
       }
     },
     "/count": {

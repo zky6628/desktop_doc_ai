@@ -22,6 +22,11 @@ BUSY_TIMEOUT_MS = 5000
 def connect(db_path: str, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
     """创建按规范配置好 PRAGMA 的 SQLite 连接
 
+    连接允许跨线程使用（check_same_thread=False）：HTTP 端点在
+    线程池线程中执行，连接由应用装配并共享；跨线程的事务边界安全
+    由事务执行器的串行化锁保证，语句级并发安全由 CPython sqlite3
+    模块的序列化模式（threadsafety=3）保证。
+
     :param db_path: 数据库文件路径（不存在时由 SQLite 自动创建）
     :param busy_timeout_ms: 可选的 busy_timeout 覆盖值（测试与特殊场景使用，
                             缺省使用 BUSY_TIMEOUT_MS）
@@ -29,7 +34,12 @@ def connect(db_path: str, busy_timeout_ms: int | None = None) -> sqlite3.Connect
              事务边界由调用方通过显式 BEGIN/COMMIT 控制
     """
     timeout = BUSY_TIMEOUT_MS if busy_timeout_ms is None else busy_timeout_ms
-    conn = sqlite3.connect(db_path, isolation_level=None, timeout=timeout / 1000.0)
+    conn = sqlite3.connect(
+        db_path,
+        isolation_level=None,
+        timeout=timeout / 1000.0,
+        check_same_thread=False,
+    )
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA synchronous = NORMAL;")
