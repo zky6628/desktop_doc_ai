@@ -7,9 +7,10 @@
 重放稳定；同一版本的重新解析只发生在解析从未成功的重试路径上，
 因此重建时不存在引用块 ID 的切片关联。
 """
+from app.domain.chunking import StoredBlock
 from app.domain.errors import EntityNotFoundError
 from app.domain.ids import uuid7
-from app.domain.parsing import ParsedDocument
+from app.domain.parsing import Block, BlockType, ParsedDocument, TableEvidence
 from app.domain.ports import ContentRepository as ContentRepositoryPort
 
 from ..transactions import run_in_transaction
@@ -85,3 +86,52 @@ class SQLiteContentRepository(ContentRepositoryPort):
             _replace,
             f"重建文档版本 {document_version_id} 的解析内容",
         )
+
+    def list_document_blocks(self, document_version_id: str) -> list[StoredBlock]:
+        """按序号升序读取已落库解析块（方法契约见领域 Port 定义）"""
+        exists = self._conn.execute(
+            "SELECT 1 FROM document_versions WHERE id = ?",
+            (document_version_id,),
+        ).fetchone()
+        if exists is None:
+            raise EntityNotFoundError(f"文档版本不存在: {document_version_id}")
+
+        # 表格证据左联读取：表格块还原完整结构证据，其余块无扩展行
+        rows = self._conn.execute(
+            "SELECT b.id, b.block_type, b.ordinal, b.page_no, b.section_path,"
+            " b.content_text, b.bbox_json, b.source_locator_json, b.content_hash,"
+            " t.raw_html, t.raw_markdown, t.structure_json, t.searchable_text,"
+            " t.serialization_model, t.serialization_version"
+            " FROM content_blocks b LEFT JOIN tables t ON t.block_id = b.id"
+            " WHERE b.document_version_id = ? ORDER BY b.ordinal",
+            (document_version_id,),
+        ).fetchall()
+        return [self._to_stored_block(row) for row in rows]
+
+    @staticmethod
+    def _to_stored_block(row) -> StoredBlock:
+        """把查询行转换为带主键的领域块（表格块还原结构证据值对象）"""
+        table = None
+        if row[1] == BlockType.TABLE.value:
+            # 表格块必有扩展证据行（LEFT JOIN 未命中时各列为空，
+            # 还原为空证据值对象，语义仍为表格块）
+            table = TableEvidence(
+                raw_html=row[9],
+                raw_markdown=row[10],
+                structure_json=row[11],
+                searchable_text=row[12],
+                serialization_model=row[13],
+                serialization_version=row[14],
+            )
+        block = Block(
+            block_type=BlockType(row[1]),
+            ordinal=row[2],
+            content_hash=row[8],
+            page_no=row[3],
+            section_path=row[4],
+            text=row[5],
+            bbox_json=row[6],
+            source_locator_json=row[7],
+            table=table,
+        )
+        return StoredBlock(id=row[0], block=block)

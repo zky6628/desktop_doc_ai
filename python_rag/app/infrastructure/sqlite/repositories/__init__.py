@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """SQLite Repository Adapter：领域仓储 Port 的具体实现"""
+from .chunk_repository import SQLiteChunkRepository
+from .config_repository import SQLiteConfigRepository
 from .content_repository import SQLiteContentRepository
 from .document_repository import SQLiteDocumentRepository
 from .document_version_repository import SQLiteDocumentVersionRepository
@@ -9,6 +11,8 @@ from .knowledge_base_repository import SQLiteKnowledgeBaseRepository
 from .task_repository import SQLiteTaskRepository
 
 __all__ = [
+    "SQLiteChunkRepository",
+    "SQLiteConfigRepository",
     "SQLiteContentRepository",
     "SQLiteDocumentRepository",
     "SQLiteDocumentVersionRepository",

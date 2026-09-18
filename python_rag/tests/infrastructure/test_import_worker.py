@@ -29,10 +29,13 @@ from app.infrastructure.mineru.dto import (
 from app.infrastructure.parsing import TxtMarkdownParser
 from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.repositories import (
+    SQLiteChunkRepository,
+    SQLiteConfigRepository,
     SQLiteContentRepository,
     SQLiteDocumentRepository,
     SQLiteDocumentVersionRepository,
     SQLiteExternalTaskRepository,
+    SQLiteIndexVersionRepository,
     SQLiteKnowledgeBaseRepository,
     SQLiteTaskRepository,
 )
@@ -58,6 +61,9 @@ def env(tmp_path):
         "versions": SQLiteDocumentVersionRepository(conn),
         "content": SQLiteContentRepository(conn),
         "external": SQLiteExternalTaskRepository(conn),
+        "indexes": SQLiteIndexVersionRepository(conn),
+        "chunks": SQLiteChunkRepository(conn),
+        "configs": SQLiteConfigRepository(conn),
         "imports": SQLiteImportRepository(conn),
     }
 
@@ -68,6 +74,9 @@ def env(tmp_path):
             version_repo=repos["versions"],
             content_repo=repos["content"],
             external_repo=repos["external"],
+            index_repo=repos["indexes"],
+            chunk_repo=repos["chunks"],
+            config_repo=repos["configs"],
             mineru_client=mineru,
             work_dir=str(tmp_path / "cloud_results"),
             worker_id="worker-test",
@@ -291,6 +300,98 @@ def test_scan_pdf_rejection_cancels_task(env):
 
     confirmed = confirm_cloud_parsing(env.repos["tasks"], task_id, "reject")
     assert confirmed.state.value == "cancelled"
+
+
+def test_local_task_builds_staging_index_with_chunks(env):
+    """任务成功后建立 staging 索引版本并落库切片与定位关系"""
+    task_id = _import_file(env, "笔记.txt", "第一段内容\n\n第二段内容".encode())
+    worker = env.build()
+
+    assert worker.process_next() is True
+
+    task = env.repos["tasks"].get(task_id)
+    version_id = task.document_version_id
+    indexes = env.repos["indexes"].list_by_document_version(version_id)
+    assert len(indexes) == 1
+    assert indexes[0].status.value == "staging"
+    # 切片配置已接线为流水线配置行
+    config = env.conn.execute(
+        "SELECT config_type, config_json FROM pipeline_configs WHERE id = ?",
+        (indexes[0].chunking_config_id,),
+    ).fetchone()
+    assert config[0] == "chunking"
+    assert '"chunking_config_version":"1"' in config[1]
+
+    chunk_rows = env.conn.execute(
+        "SELECT ordinal, content FROM chunks WHERE index_version_id = ?"
+        " ORDER BY ordinal",
+        (indexes[0].id,),
+    ).fetchall()
+    assert chunk_rows, "切片应已落库"
+    # 定位关系与解析块衔接
+    links = env.conn.execute(
+        "SELECT COUNT(*) FROM chunk_block_links"
+        " WHERE chunk_id IN (SELECT id FROM chunks WHERE index_version_id = ?)",
+        (indexes[0].id,),
+    ).fetchone()[0]
+    assert links >= len(chunk_rows)
+
+
+def test_chunking_resume_reuses_staging_index(env):
+    """切片中断续跑：复用既有 staging 索引，切片无重复"""
+    task_id = _import_file(env, "笔记.txt", "切片内容\n\n更多内容".encode())
+    worker = env.build()
+
+    # 构造"切片阶段崩溃"现场：任务停留在 chunking 阶段且租约失效，
+    # 前序尝试已确保配置并创建 staging 索引
+    claimed = env.repos["tasks"].claim_next("worker-crashed", task_type="import")
+    assert claimed.id == task_id
+    config_id = env.repos["configs"].ensure_config(
+        "chunking",
+        json.dumps(
+            {
+                "chunking_config_version": "1",
+                "parent_chunk_chars": 1200,
+                "child_chunk_chars": 400,
+                "content_separator": "\n\n",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    index_version = env.repos["indexes"].create(
+        claimed.document_version_id, chunking_config_id=config_id
+    )
+    expires_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=31)
+    ).isoformat(timespec="seconds")
+    env.conn.execute(
+        "UPDATE tasks SET stage = 'chunking', lease_expires_at = ? WHERE id = ?",
+        (expires_at, task_id),
+    )
+    assert env.repos["tasks"].recover_interrupted_tasks()[
+        "stale_running_requeued"
+    ] == 1
+
+    assert worker.process_next() is True
+
+    task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "succeeded"
+    # staging 索引被复用而非新建
+    indexes = env.repos["indexes"].list_by_document_version(
+        claimed.document_version_id
+    )
+    assert len(indexes) == 1
+    assert indexes[0].id == index_version.id
+    ordinals = [
+        row[0]
+        for row in env.conn.execute(
+            "SELECT ordinal FROM chunks WHERE index_version_id = ? ORDER BY ordinal",
+            (index_version.id,),
+        ).fetchall()
+    ]
+    assert ordinals == list(range(len(ordinals)))
 
 
 # ===================== 云端路线 =====================

@@ -20,8 +20,9 @@ TABLE_SERIALIZATION_MODEL_LOCAL = "local"
 TABLE_SERIALIZATION_VERSION = "1"
 
 # 规范 JSON 序列化：紧凑分隔符 + 键排序 + 保留非 ASCII 字符，
-# 保证哈希输入在不同运行环境间逐字节一致
-def _canonical_json(payload: object) -> str:
+# 保证哈希输入在不同运行环境间逐字节一致；切片等其他需要确定性
+# 哈希的领域模块共用本函数，避免各处序列化口径漂移
+def canonical_json(payload: object) -> str:
     """把哈希输入载荷序列化为规范 JSON 文本
 
     :param payload: 可 JSON 序列化的哈希输入
@@ -131,7 +132,7 @@ def make_block(
             "serialization_version": table.serialization_version,
         },
     }
-    canonical = _canonical_json(payload)
+    canonical = canonical_json(payload)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return Block(
         block_type=block_type,
@@ -181,5 +182,5 @@ class ParsedDocument:
                 for block in self.blocks
             ],
         }
-        canonical = _canonical_json(payload)
+        canonical = canonical_json(payload)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

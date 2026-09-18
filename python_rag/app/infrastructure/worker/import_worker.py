@@ -22,9 +22,16 @@ import shutil
 import threading
 
 from app.domain import parser_routing
+from app.domain.chunking import (
+    CHUNKING_CONFIG_TYPE,
+    chunk_blocks,
+    chunking_config_json,
+)
 from app.domain.entities import (
     DocumentVersion,
     ExternalTask,
+    IndexVersion,
+    IndexVersionStatus,
     Task,
     TaskStage,
     TaskStatus,
@@ -43,10 +50,13 @@ from app.domain.errors import (
 )
 from app.domain.parsing import ParsedDocument
 from app.domain.ports import (
+    ChunkRepository,
     ContentRepository,
     DocumentRepository,
     DocumentVersionRepository,
     ExternalTaskRepository,
+    IndexVersionRepository,
+    PipelineConfigRepository,
     TaskRepository,
 )
 from app.domain.task_state import HEARTBEAT_INTERVAL_SECONDS
@@ -79,6 +89,7 @@ _STAGE_PROGRESS: dict[TaskStage, float] = {
     TaskStage.POLLING_CLOUD: 0.6,
     TaskStage.DOWNLOADING_CLOUD_RESULT: 0.75,
     TaskStage.NORMALIZING: 0.9,
+    TaskStage.CHUNKING: 1.0,
     TaskStage.COMPLETED: 1.0,
 }
 
@@ -135,8 +146,11 @@ class ImportTaskWorker:
     :param task_repo: 任务仓储
     :param document_repo: 文档仓储
     :param version_repo: 文档版本仓储
-    :param content_repo: 内容仓储（解析事实落库）
+    :param content_repo: 内容仓储（解析事实落库与读取）
     :param external_repo: 外部任务仓储（批次事实唯一事实源）
+    :param index_repo: 索引版本仓储（staging 索引复用与创建）
+    :param chunk_repo: 切片仓储（切片与定位关系写入）
+    :param config_repo: 流水线配置仓储（切片配置版本行）
     :param mineru_client: 云端解析客户端；未配置时云端任务在提交时
         按认证失败处理（本地路线不受影响）
     :param work_dir: 云端产物受控工作目录（结果下载与解压）
@@ -151,6 +165,9 @@ class ImportTaskWorker:
         version_repo: DocumentVersionRepository,
         content_repo: ContentRepository,
         external_repo: ExternalTaskRepository,
+        index_repo: IndexVersionRepository,
+        chunk_repo: ChunkRepository,
+        config_repo: PipelineConfigRepository,
         mineru_client: MinerUClient | None,
         work_dir: str,
         worker_id: str,
@@ -160,6 +177,9 @@ class ImportTaskWorker:
         self._version_repo = version_repo
         self._content_repo = content_repo
         self._external_repo = external_repo
+        self._index_repo = index_repo
+        self._chunk_repo = chunk_repo
+        self._config_repo = config_repo
         self._mineru = mineru_client
         self._work_dir = work_dir
         self._worker_id = worker_id
@@ -292,6 +312,9 @@ class ImportTaskWorker:
             self._run_cloud(task)
         elif stage in (TaskStage.DOWNLOADING_CLOUD_RESULT, TaskStage.NORMALIZING):
             self._finish_cloud(task)
+        elif stage is TaskStage.CHUNKING:
+            # 切片中断续跑：解析事实已落库，直接重入切片（幂等）
+            self._run_chunking(task, self._require_version(task))
         else:
             raise RuntimeError(f"导入任务阶段不在可执行范围: {stage.value}")
 
@@ -324,7 +347,7 @@ class ImportTaskWorker:
             self._run_cloud(task)
             return
 
-        self._persist_parsed(task.id, version, parsed)
+        self._persist_parsed(task, version, parsed)
 
     def _run_cloud(self, task: Task) -> None:
         """云端路线：提交（或恢复既有批次）-> 轮询 -> 转下载阶段"""
@@ -460,18 +483,17 @@ class ImportTaskWorker:
 
         self._set_stage(task.id, TaskStage.NORMALIZING)
         parsed = normalize_archive(extract_dir, version.id)
-        self._persist_parsed(task.id, version, parsed)
-        _remove_tree(work_root)
+        self._persist_parsed(task, version, parsed)
 
     def _persist_parsed(
-        self, task_id: str, version: DocumentVersion, parsed: ParsedDocument
+        self, task: Task, version: DocumentVersion, parsed: ParsedDocument
     ) -> None:
-        """解析事实原子提交：内容落库 -> 版本回写 -> 任务成功
+        """解析事实原子提交：内容落库 -> 版本回写 -> 进入切片阶段
 
         落库前执行最后检查点；提交序列之后若与取消请求竞争，按取消
         语义收尾（已落库的解析事实保留，不伪装为成功）
         """
-        self._checkpoint(task_id)
+        self._checkpoint(task.id)
         self._content_repo.replace_document_content(version.id, parsed)
         self._version_repo.mark_parsed(
             version.id,
@@ -479,7 +501,53 @@ class ImportTaskWorker:
             parser_provider=parsed.parser_provider,
             parser_version=parsed.parser_version,
         )
-        self._set_stage(task_id, TaskStage.COMPLETED)
+        try:
+            self._run_chunking(task, version)
+        except TaskStateConflictError:
+            # 阶段推进被拒的唯一可能：取消请求先转入等待取消状态
+            self._task_repo.cancel_at_checkpoint(task.id, self._worker_id)
+
+    def _run_chunking(self, task: Task, version: DocumentVersion) -> None:
+        """切片阶段：确保配置 -> 复用或创建 staging 索引版本 -> 切片落库
+
+        切片输入读取已落库的解析事实（与内存解析模型解耦），中断
+        续跑无需重新解析；写入按序号幂等 upsert，重试不产生重复
+        """
+        self._set_stage(task.id, TaskStage.CHUNKING)
+        config_id = self._config_repo.ensure_config(
+            CHUNKING_CONFIG_TYPE, chunking_config_json()
+        )
+        index_version = self._ensure_index_version(version.id, config_id)
+        blocks = self._content_repo.list_document_blocks(version.id)
+        chunks = chunk_blocks(blocks)
+        self._chunk_repo.replace_index_chunks(index_version.id, chunks)
+        self._succeed(task.id)
+
+    def _ensure_index_version(
+        self, document_version_id: str, config_id: str
+    ) -> IndexVersion:
+        """复用或创建该文档版本的 staging 索引版本
+
+        同一文档版本同时至多一个在途 staging 索引：切片中断续跑复用
+        既有记录（切片按序号幂等重写），避免每次尝试遗留孤儿 staging；
+        配置不一致的既有 staging 不复用（留待补偿清理），以新索引表达
+        参数变化
+        """
+        reusable = None
+        for index in self._index_repo.list_by_document_version(document_version_id):
+            if (
+                index.status is IndexVersionStatus.STAGING
+                and index.chunking_config_id == config_id
+            ):
+                reusable = index
+        if reusable is not None:
+            return reusable
+        return self._index_repo.create(
+            document_version_id, chunking_config_id=config_id
+        )
+
+    def _succeed(self, task_id: str) -> None:
+        """任务成功收尾：迁移终态；与取消请求竞争时按取消语义收尾"""
         try:
             self._task_repo.transition(
                 task_id, TaskStatus.SUCCEEDED, stage=TaskStage.COMPLETED

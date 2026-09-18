@@ -6,7 +6,9 @@ Port 由领域层定义、基础设施层实现（SQLite Adapter）。
 未在此定义的读写能力（如内容表的批量摄取）随对应里程碑补充。
 """
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
+from .chunking import Chunk, StoredBlock
 from .entities import (
     Document,
     DocumentVersion,
@@ -124,8 +126,9 @@ class IndexVersionRepository(ABC):
         document_version_id: str,
         vector_collection: str | None = None,
         fts_namespace: str | None = None,
+        chunking_config_id: str | None = None,
     ) -> IndexVersion:
-        """创建索引版本（staging）；版本不存在时抛 EntityNotFoundError"""
+        """创建索引版本（staging）；版本不存在抛 EntityNotFoundError"""
 
     @abstractmethod
     def get(self, index_id: str) -> IndexVersion | None:
@@ -156,6 +159,39 @@ class ContentRepository(ABC):
         单事务内先删除该版本的表格证据与内容块，再按块序写入：
         同一版本重放不产生重复块。返回写入的块数。版本不存在抛
         EntityNotFoundError"""
+
+    @abstractmethod
+    def list_document_blocks(self, document_version_id: str) -> list[StoredBlock]:
+        """按序号升序读取该版本的已落库解析块（含表格证据）
+
+        切片等下游阶段以此读取解析事实，与内存解析模型解耦。
+        版本不存在抛 EntityNotFoundError"""
+
+
+class PipelineConfigRepository(ABC):
+    """流水线配置仓储：不可变配置版本历史的写入与复用"""
+
+    @abstractmethod
+    def ensure_config(self, config_type: str, config_json: str) -> str:
+        """确保指定类型的配置行存在并返回其 ID（幂等）
+
+        内容哈希命中在役配置行时直接复用；未命中时在事务内以类型内
+        递增版本号创建新配置行。配置记录不可原地修改，参数变化通过
+        新版本行表达。"""
+
+
+class ChunkRepository(ABC):
+    """切片仓储：索引版本内切片与其定位关系的持久化"""
+
+    @abstractmethod
+    def replace_index_chunks(self, index_version_id: str, chunks: Sequence[Chunk]) -> int:
+        """把切片序列写入索引版本（按序号幂等 upsert）
+
+        以 (索引版本, 序号) 为行级键：已存在的切片原地更新并保留
+        首次写入的主键（下游向量索引因此获得稳定 ID），新切片插入
+        新主键；定位关系按切片整体替换；序号超出本次输入范围的残留
+        行一并清除。切片主键不存在抛 EntityNotFoundError（含子切片
+        引用的父序号缺失）。返回写入切片数。"""
 
 
 class ImportRepository(ABC):

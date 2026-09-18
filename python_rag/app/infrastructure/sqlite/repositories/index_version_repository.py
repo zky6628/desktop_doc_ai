@@ -29,6 +29,7 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
         document_version_id: str,
         vector_collection: str | None = None,
         fts_namespace: str | None = None,
+        chunking_config_id: str | None = None,
     ) -> IndexVersion:
         def _create(conn) -> IndexVersion:
             now = utc_now_iso()
@@ -48,11 +49,11 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
                 " (id, document_version_id, index_no, status, parser_config_id,"
                 "  chunking_config_id, embedding_profile_id, vector_collection, fts_namespace,"
                 "  chunk_count, integrity_hash, created_at, activated_at, retired_at)"
-                " VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, NULL, ?, NULL, NULL)",
+                " VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL, NULL, ?, NULL, NULL)",
                 (
                     index_id, document_version_id, next_no,
                     IndexVersionStatus.STAGING.value,
-                    vector_collection, fts_namespace, now,
+                    chunking_config_id, vector_collection, fts_namespace, now,
                 ),
             )
             return IndexVersion(
@@ -61,7 +62,7 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
                 index_no=next_no,
                 status=IndexVersionStatus.STAGING,
                 parser_config_id=None,
-                chunking_config_id=None,
+                chunking_config_id=chunking_config_id,
                 embedding_profile_id=None,
                 vector_collection=vector_collection,
                 fts_namespace=fts_namespace,

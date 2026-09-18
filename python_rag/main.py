@@ -184,10 +184,13 @@ from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.migrations import apply_migrations
 from app.infrastructure.sqlite.repositories.import_repository import SQLiteImportRepository
 from app.infrastructure.sqlite.repositories import (
+    SQLiteChunkRepository,
+    SQLiteConfigRepository,
     SQLiteContentRepository,
     SQLiteDocumentRepository,
     SQLiteDocumentVersionRepository,
     SQLiteExternalTaskRepository,
+    SQLiteIndexVersionRepository,
 )
 from app.infrastructure.sqlite.repositories.task_repository import SQLiteTaskRepository
 from app.infrastructure.storage.upload_staging import UploadStagingStore
@@ -672,6 +675,9 @@ if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "
         version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
         content_repo=SQLiteContentRepository(_workbench_conn),
         external_repo=SQLiteExternalTaskRepository(_workbench_conn),
+        index_repo=SQLiteIndexVersionRepository(_workbench_conn),
+        chunk_repo=SQLiteChunkRepository(_workbench_conn),
+        config_repo=SQLiteConfigRepository(_workbench_conn),
         mineru_client=MinerUClient(api_token=_mineru_token) if _mineru_token else None,
         work_dir=os.path.join(WORKBENCH_STAGING_DIR, "cloud_results"),
         worker_id=f"worker-{uuid7()}",
