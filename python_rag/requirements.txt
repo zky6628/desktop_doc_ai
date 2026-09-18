@@ -41,3 +41,5 @@ Pillow>=12.2.0
 python-dotenv>=1.2.0
 # UUIDv7 生成（RFC 9562；Python 3.12 标准库尚无 uuid.uuid7，3.14 才内置）
 uuid6>=2024.1.12
+# HTTP 客户端（MinerU 云端解析适配器：流式上传/下载、重定向与超时控制、可注入 Mock 传输层）
+httpx>=0.28.0

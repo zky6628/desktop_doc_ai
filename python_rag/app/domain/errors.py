@@ -95,3 +95,55 @@ class TextEncodingError(ParsingError):
     """文本文件编码无法识别：既不是合法 UTF-8 也不是合法 GBK"""
 
     error_code = "PARSING_TEXT_ENCODING"
+
+
+class CloudParsingError(RepositoryError):
+    """云端解析适配失败的基类：错误码供任务失败/自动重试分类使用
+
+    错误消息只描述失败类别与供应商脱敏摘要，不得携带预签名 URL、
+    用户路径或文档内容
+    """
+
+    error_code = "CLOUD_PARSING_FAILED"
+
+
+class CloudTransportError(CloudParsingError):
+    """瞬态传输/服务错误：网络中断、超时重置、429/408/5xx、供应商暂时不可用"""
+
+    error_code = "CLOUD_TRANSIENT"
+
+
+class CloudAuthError(CloudParsingError):
+    """认证/授权失败：Token 错误或过期、401/403，不可自动重试"""
+
+    error_code = "CLOUD_AUTH"
+
+
+class CloudQuotaError(CloudParsingError):
+    """供应商配额不足（每日解析额度等），不可自动重试"""
+
+    error_code = "CLOUD_QUOTA"
+
+
+class CloudInputRejectedError(CloudParsingError):
+    """供应商拒绝输入：格式不支持、文件损坏、大小/页数超限等，不可自动重试"""
+
+    error_code = "CLOUD_INPUT_REJECTED"
+
+
+class CloudProtocolViolationError(CloudParsingError):
+    """供应商响应违反协议：未知状态码、缺字段、schema 不符，不可自动重试"""
+
+    error_code = "CLOUD_PROTOCOL_VIOLATION"
+
+
+class CloudTimeoutError(CloudParsingError):
+    """云端解析超时：单文件超过轮询时限仍未完成"""
+
+    error_code = "CLOUD_TIMEOUT"
+
+
+class ArchiveRejectedError(CloudParsingError):
+    """结果压缩包安全校验拒绝：路径穿越、链接条目、超限、炸弹、白名单外类型"""
+
+    error_code = "CLOUD_ARCHIVE_REJECTED"

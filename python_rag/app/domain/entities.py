@@ -198,3 +198,29 @@ class TaskEvent:
     checkpoint_json: str | None
     error_code: str | None
     detail_json: str | None
+
+
+@dataclass(frozen=True)
+class ExternalTask:
+    """外部任务：云端解析供应方侧的提交与轮询事实
+
+    稳定唯一键为 (provider, provider_batch_ref, source_ref)；
+    provider_task_id 只是可空观测值，不作为恢复前提
+    """
+
+    id: str
+    task_id: str
+    provider: str
+    provider_batch_ref: str
+    source_ref: str
+    provider_task_id: str | None
+    upload_url_expires_at: str | None
+    remote_cancel_state: str | None
+    provider_status_summary: str | None
+    state: str | None
+    poll_count: int
+    last_polled_at: str | None
+    request_summary_json: str | None
+    result_uri: str | None
+    result_sha256: str | None
+    expires_at: str | None

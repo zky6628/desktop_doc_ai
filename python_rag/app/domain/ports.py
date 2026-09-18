@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from .entities import (
     Document,
     DocumentVersion,
+    ExternalTask,
     IndexVersion,
     KnowledgeBase,
     Task,
@@ -158,6 +159,62 @@ class ImportRepository(ABC):
         既有任务（不重复建立文档与版本）。知识库不存在抛
         EntityNotFoundError；队列容量不足抛 TaskQueueFullError 且
         无任何残留。"""
+
+
+class ExternalTaskRepository(ABC):
+    """外部任务仓储：云端批次关联与轮询事实的持久化
+
+    以 (provider, provider_batch_ref, source_ref) 为稳定唯一键；
+    预签名上传地址只驻留内存，库里只保存过期时间。
+    """
+
+    @abstractmethod
+    def register(
+        self,
+        *,
+        task_id: str,
+        provider: str,
+        provider_batch_ref: str,
+        source_ref: str,
+        upload_url_expires_at: str | None = None,
+        request_summary_json: str | None = None,
+    ) -> ExternalTask:
+        """登记批次内一个源文件的云端关联（幂等）：同键已存在时返回
+        既有记录，保证重放不重复登记"""
+
+    @abstractmethod
+    def get_by_refs(
+        self, provider: str, provider_batch_ref: str, source_ref: str
+    ) -> ExternalTask | None:
+        """按稳定唯一键读取；不存在返回 None"""
+
+    @abstractmethod
+    def list_by_task(self, task_id: str) -> list[ExternalTask]:
+        """列出任务关联的全部外部任务（按登记顺序）"""
+
+    @abstractmethod
+    def record_poll(
+        self,
+        external_task_id: str,
+        *,
+        state: str,
+        status_summary: str | None = None,
+        provider_task_id: str | None = None,
+    ) -> ExternalTask:
+        """记录一次轮询事实：轮询计数自增并刷新最近轮询时间、供应方
+        状态与脱敏摘要；记录不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def set_result(
+        self,
+        external_task_id: str,
+        *,
+        result_sha256: str,
+        expires_at: str | None = None,
+        state: str | None = None,
+    ) -> ExternalTask:
+        """记录结果事实：内容哈希与过期时间；结果地址按安全合同不落库，
+        下载由持有该地址的内存流程完成。记录不存在抛 EntityNotFoundError"""
 
 
 class TaskRepository(ABC):
