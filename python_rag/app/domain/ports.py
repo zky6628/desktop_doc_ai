@@ -180,6 +180,26 @@ class PipelineConfigRepository(ABC):
         新版本行表达。"""
 
 
+class EmbeddingGateway(ABC):
+    """Embedding 网关：文本向量化的供应方边界
+
+    输出顺序与输入顺序严格一致；瞬态失败以领域错误表达，由调用方
+    （任务引擎）按退避策略重试，网关内部不重试
+    """
+
+    @abstractmethod
+    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+        """把文本序列向量化
+
+        :param texts: 文本序列（允许为空，空输入返回空列表且不发起请求）
+        :return: 与输入同序的向量列表
+        :raises EmbeddingTransientError: 网络或供应方瞬态故障
+        :raises EmbeddingAuthError: 密钥无效
+        :raises EmbeddingQuotaError: 配额不足
+        :raises EmbeddingProtocolViolationError: 响应不符合协议或对齐校验失败
+        """
+
+
 class ChunkRepository(ABC):
     """切片仓储：索引版本内切片与其定位关系的持久化"""
 

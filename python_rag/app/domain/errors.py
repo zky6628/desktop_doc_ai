@@ -147,3 +147,36 @@ class ArchiveRejectedError(CloudParsingError):
     """结果压缩包安全校验拒绝：路径穿越、链接条目、超限、炸弹、白名单外类型"""
 
     error_code = "CLOUD_ARCHIVE_REJECTED"
+
+
+class EmbeddingError(RepositoryError):
+    """Embedding 网关失败的基类：错误码供任务失败/自动重试分类使用
+
+    错误消息只描述失败类别与脱敏摘要，不得携带密钥或文本内容
+    """
+
+    error_code = "EMBEDDING_FAILED"
+
+
+class EmbeddingTransientError(EmbeddingError):
+    """瞬态传输/服务错误：网络中断、超时、429/408/5xx，可自动重试"""
+
+    error_code = "EMBEDDING_TRANSIENT"
+
+
+class EmbeddingAuthError(EmbeddingError):
+    """认证失败：API Key 无效或被拒绝，不可自动重试"""
+
+    error_code = "EMBEDDING_AUTH"
+
+
+class EmbeddingQuotaError(EmbeddingError):
+    """配额不足：欠费或额度耗尽，不可自动重试"""
+
+    error_code = "EMBEDDING_QUOTA"
+
+
+class EmbeddingProtocolViolationError(EmbeddingError):
+    """响应违反协议：未知业务错误码、数量/维度/对齐校验失败，不可自动重试"""
+
+    error_code = "EMBEDDING_PROTOCOL_VIOLATION"
