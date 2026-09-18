@@ -46,6 +46,7 @@ app.*.map.json
 flutter_app/.vscode/launch.json
 python_rag/.env
 python_rag/chroma_db/
+python_rag/uploads/
 .vscode/launch.json
 summary.md
 AGENTS.md

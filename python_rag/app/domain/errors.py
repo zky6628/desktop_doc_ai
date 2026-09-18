@@ -36,3 +36,24 @@ class TaskStateConflictError(RepositoryError):
 
 class TaskLeaseLostError(RepositoryError):
     """任务租约无效：未持有租约、持有者不匹配或租约已过期"""
+
+
+class FileTooLargeError(RepositoryError):
+    """上传文件超过单文件大小上限，暂存已中止且无残留"""
+
+
+class UnsupportedFormatError(RepositoryError):
+    """文件格式不被接受：扩展名不在白名单、扩展名/MIME/真实格式
+    不一致，或容器损坏、加密"""
+
+
+class EmptyFileError(RepositoryError):
+    """上传文件内容为空"""
+
+
+class PathUnsafeError(RepositoryError):
+    """落盘路径校验失败：解析后逃出受控根目录"""
+
+
+class InsufficientDiskSpaceError(RepositoryError):
+    """磁盘剩余空间不足，无法暂存上传文件"""

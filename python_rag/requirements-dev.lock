@@ -76,6 +76,8 @@ filelock==4.0.0
     # via
     #   huggingface-hub
     #   torch
+filetype==1.2.0
+    # via -r requirements.txt
 flatbuffers==25.12.19
     # via onnxruntime
 frozenlist==1.8.0
