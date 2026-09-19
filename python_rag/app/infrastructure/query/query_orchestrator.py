@@ -42,7 +42,10 @@ from app.domain.ports import (
     RerankGateway,
 )
 from app.domain.rerank import RERANK_TOP_N, rerank_config_json
-from app.domain.retrieval import retrieval_config_json
+from app.domain.retrieval import (
+    CandidateRecord,
+    retrieval_config_json,
+)
 from app.infrastructure.retrieval import ContextResolver, RetrievalService
 
 # 未知异常的兜底错误码（终态落库与 SSE error 事件）
@@ -123,6 +126,8 @@ class QueryOrchestrator:
         if run.state is not QueryRunState.QUEUED:
             # 幂等重放：既有查询已在执行或已终态，不重复启动
             return run
+        # 懒清理：新查询创建时顺带回收已过期的 token 批次（03 保留期）
+        self._event_store.purge_expired_tokens()
         conversation = self._conversation_repo.ensure_conversation(
             kb_id, conversation_id
         )
@@ -172,7 +177,9 @@ class QueryOrchestrator:
                 payload={"query_id": run_id, "knowledge_base_id": kb_id},
             )
             self._emit_stage(run_id, "retrieval_started")
+            retrieval_started = self._clock()
             result = self._retrieval_service.retrieve(kb_id, question)
+            retrieval_ms = int((self._clock() - retrieval_started) * 1000)
             self._emit_stage(
                 run_id, "retrieval_completed", {"candidates": len(result.candidates)}
             )
@@ -190,27 +197,67 @@ class QueryOrchestrator:
                 for candidate in result.candidates
                 if candidate.chunk_id in sources_by_id
             ]
+            rerank_started = self._clock()
             degraded, ranked_ids, rerank_scores = self._rank_candidates(
                 question, result.candidates, candidate_texts
             )
+            rerank_ms = int((self._clock() - rerank_started) * 1000)
             if degraded:
                 self._emit_stage(run_id, "rerank_degraded")
             self._emit_stage(run_id, "rerank_completed")
 
+            prompt_started = self._clock()
             budget = (
                 CONTEXT_TOKEN_BUDGET
                 - OUTPUT_RESERVE_TOKENS
                 - token_estimate(question)
             )
             assembled = assemble_context(sources, ranked_ids, token_budget=budget)
+            prompt_build_ms = int((self._clock() - prompt_started) * 1000)
             if not assembled.blocks:
                 self._finalize_refusal(
                     run_id, kb_id, conversation_id, user_message_id
                 )
                 return
 
+            # 候选快照落库：各阶段排名/分数与是否进入上下文（评测主体）
+            in_context_ids = {block.chunk_id for block in assembled.blocks}
+            rerank_rank_by_chunk = {
+                chunk_id: position
+                for position, chunk_id in enumerate(ranked_ids, start=1)
+            }
+            candidate_records = [
+                CandidateRecord(
+                    query_run_id=run_id,
+                    chunk_id=candidate.chunk_id,
+                    source=(
+                        "dual"
+                        if candidate.vector_rank is not None
+                        and candidate.keyword_rank is not None
+                        else (
+                            "vector"
+                            if candidate.vector_rank is not None
+                            else "keyword"
+                        )
+                    ),
+                    vector_rank=candidate.vector_rank,
+                    vector_score=candidate.vector_score,
+                    keyword_rank=candidate.keyword_rank,
+                    keyword_score=candidate.keyword_score,
+                    rrf_rank=candidate.rrf_rank,
+                    rrf_score=candidate.rrf_score,
+                    rerank_rank=rerank_rank_by_chunk.get(candidate.chunk_id)
+                    if not degraded
+                    else None,
+                    rerank_score=rerank_scores.get(candidate.chunk_id),
+                    in_context=candidate.chunk_id in in_context_ids,
+                )
+                for candidate in result.candidates
+            ]
+            self._run_repo.record_candidates(run_id, candidate_records)
+
             self._emit_stage(run_id, "generation_started")
-            answer_text, cancelled = self._stream_generation(
+            answer_text, cancelled, model_ttft_ms = self._stream_generation(
                 run_id, assembled, question
             )
             if cancelled:
@@ -223,6 +270,16 @@ class QueryOrchestrator:
             message_id = self._persist_citations(
                 run_id, kb_id, conversation_id, user_message_id,
                 answer_text, assembled, result.candidates, rerank_scores,
+            )
+            usage = self._generation_gateway.last_usage
+            self._run_repo.record_segments(
+                run_id,
+                retrieval_ms=retrieval_ms,
+                rerank_ms=rerank_ms,
+                prompt_build_ms=prompt_build_ms,
+                model_ttft_ms=model_ttft_ms,
+                input_tokens=usage[0] if usage else None,
+                output_tokens=usage[1] if usage else None,
             )
             self._event_store.append(run_id, event_type="done", payload={})
             self._event_store.expire_tokens(run_id, self._token_retention_seconds)
@@ -266,18 +323,25 @@ class QueryOrchestrator:
                 last_error = exc
         raise last_error  # type: ignore[misc]
 
-    def _stream_generation(self, run_id, assembled, question) -> tuple[str, bool]:
-        """流式生成：增量累积、批次落库、取消检查点；返回 (全文, 是否取消)"""
+    def _stream_generation(self, run_id, assembled, question):
+        """流式生成：增量累积、批次落库、取消检查点
+
+        :return: (全文, 是否取消, 模型首 token 耗时 ms)
+        """
         messages = build_prompt_messages(assembled.blocks, question)
         parts: list[str] = []
         buffer: list[str] = []
         token_seq = 0
         batch_start = 0
         last_flush = self._clock()
+        model_ttft_ms = 0
         for delta in self._generation_gateway.stream_answer(messages):
+            if token_seq == 0:
+                model_ttft_ms = int((self._clock() - last_flush) * 1000)
+                last_flush = self._clock()
             if self._run_repo.is_cancel_requested(run_id):
                 self._flush_tokens(run_id, buffer, batch_start, token_seq)
-                return "".join(parts), True
+                return "".join(parts), True, model_ttft_ms
             token_seq += 1
             parts.append(delta)
             buffer.append(delta)
@@ -293,7 +357,7 @@ class QueryOrchestrator:
                 batch_start = token_seq
                 last_flush = now
         self._flush_tokens(run_id, buffer, batch_start, token_seq)
-        return "".join(parts), False
+        return "".join(parts), False, model_ttft_ms
 
     def _flush_tokens(self, run_id, buffer, batch_start, token_seq) -> None:
         if not buffer:

@@ -6,12 +6,14 @@
 回 202；SSE 端点轮询事件存储（Last-Event-ID 断点重放、10 秒心跳、
 终态关流）；断线不取消生成，取消走显式端点在检查点生效。
 """
+import hashlib
 import json
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Annotated
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -53,6 +55,15 @@ class QueryCreateBody(BaseModel):
     knowledge_base_id: str
     question: str
     conversation_id: str | None = None
+
+
+class ClientMetricsBody(BaseModel):
+    """客户端遥测请求体（不含问题、回答与密钥）"""
+
+    client_send_at: str
+    first_sse_token_received_at: str
+    first_token_rendered_at: str
+    network_context: dict | None = None
 
 
 def create_query_router(deps: QueryDependencies) -> APIRouter:
@@ -189,6 +200,73 @@ def create_query_router(deps: QueryDependencies) -> APIRouter:
             ),
         )
 
+    @router.post("/queries/{query_id}/client-metrics")
+    def report_client_metrics(
+        query_id: str,
+        body: ClientMetricsBody,
+        x_client_instance_id: Annotated[
+            str | None, Header(alias="X-Client-Instance-Id")
+        ] = None,
+    ) -> Response:
+        """客户端遥测：服务端按时间戳计算 TTFT（不接收正文与密钥）"""
+        request_id = new_request_id()
+        run = deps.orchestrator.get_run(query_id)
+        if run is None:
+            return JSONResponse(
+                status_code=404,
+                content=error_envelope(
+                    request_id, "QUERY_NOT_FOUND", "查询不存在"
+                ),
+            )
+        send_at = body.client_send_at
+        received_at = body.first_sse_token_received_at
+        rendered_at = body.first_token_rendered_at
+        try:
+            send_dt = _parse_iso(send_at)
+            rendered_dt = _parse_iso(rendered_at)
+        except ValueError:
+            return JSONResponse(
+                status_code=400,
+                content=error_envelope(
+                    request_id, "INVALID_PARAM", "时间戳格式非法"
+                ),
+            )
+        if not (send_dt <= _parse_iso(received_at) <= rendered_dt):
+            return JSONResponse(
+                status_code=400,
+                content=error_envelope(
+                    request_id, "INVALID_PARAM", "遥测时间顺序非法"
+                ),
+            )
+        client_ttft_ms = int((rendered_dt - send_dt).total_seconds() * 1000)
+        instance_hash = (
+            hashlib.sha256(x_client_instance_id.encode("utf-8")).hexdigest()
+            if x_client_instance_id
+            else None
+        )
+        try:
+            deps.run_repo.record_client_metric(
+                query_id,
+                client_send_at=send_at,
+                first_sse_token_received_at=received_at,
+                first_token_rendered_at=rendered_at,
+                client_ttft_ms=client_ttft_ms,
+                client_instance_id_hash=instance_hash,
+                network_context_json=(
+                    json.dumps(body.network_context, ensure_ascii=False)
+                    if body.network_context is not None
+                    else None
+                ),
+            )
+        except EntityNotFoundError:
+            return JSONResponse(
+                status_code=404,
+                content=error_envelope(
+                    request_id, "QUERY_NOT_FOUND", "查询不存在"
+                ),
+            )
+        return Response(status_code=204)
+
     def _event_stream(query_id: str, after_seq: int):
         """SSE 事件生成器：轮询事件存储，重放按 Last-Event-ID 续传"""
         last_heartbeat = time.monotonic()
@@ -208,6 +286,11 @@ def create_query_router(deps: QueryDependencies) -> APIRouter:
             time.sleep(_POLL_INTERVAL_SECONDS)
 
     return router
+
+
+def _parse_iso(value: str) -> datetime:
+    """解析 ISO-8601 时间戳（非法抛 ValueError）"""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _parse_last_event_id(raw: str | None) -> int:

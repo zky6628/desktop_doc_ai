@@ -177,7 +177,12 @@ from langchain_core.embeddings import Embeddings
 from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
 # 工作台 v1 运行时：SQLite 事实源 + 任务化导入（/api/v1）
 import chromadb
-from app.api.v1 import ApiV1Dependencies, QueryDependencies, create_api_router
+from app.api.v1 import (
+    ApiV1Dependencies,
+    MetricsDependencies,
+    QueryDependencies,
+    create_api_router,
+)
 from app.domain.ids import uuid7
 from app.infrastructure.embedding import DashScopeEmbeddingGateway
 from app.infrastructure.generation import DashScopeGenerationGateway
@@ -783,6 +788,9 @@ app.include_router(
             orchestrator=_workbench_orchestrator,
             task_repo=_workbench_task_repo,
             query=_query_deps,
+            metrics=MetricsDependencies(
+                run_repo=_query_run_repo, conn=_workbench_conn
+            ),
         )
     )
 )

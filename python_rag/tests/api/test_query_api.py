@@ -11,7 +11,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.api.v1 import ApiV1Dependencies, QueryDependencies, create_api_router
+from app.api.v1 import (
+    ApiV1Dependencies,
+    MetricsDependencies,
+    QueryDependencies,
+    create_api_router,
+)
 from app.domain.retrieval import IndexHit
 from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.query import QueryOrchestrator
@@ -77,6 +82,7 @@ class ScriptedGenerationGateway:
     def __init__(self) -> None:
         self.deltas: list[str] = []
         self.calls = 0
+        self.last_usage = (30, 20)
 
     def stream_answer(self, messages):
         self.calls += 1
@@ -133,6 +139,9 @@ def runtime(tmp_path):
                     kb_repo=kb_repo,
                     conversation_repo=SQLiteConversationRepository(conn),
                     citation_repo=SQLiteCitationRepository(conn),
+                ),
+                metrics=MetricsDependencies(
+                    run_repo=SQLiteQueryRunRepository(conn), conn=conn
                 ),
             )
         )
@@ -321,3 +330,90 @@ def test_cancel_endpoint_is_idempotent_and_404_for_missing(runtime):
     env = runtime
     missing = env.client.post("/api/v1/queries/no-such-id/cancel")
     assert missing.status_code == 404
+
+
+def test_client_metrics_endpoint_idempotent_and_validated(runtime):
+    """客户端遥测：204 计算客户端 TTFT，重放幂等，时间顺序非法 400"""
+    env = runtime
+    created = env.client.post(
+        "/api/v1/queries",
+        json={"knowledge_base_id": env.kb_id, "question": "问题"},
+    ).json()["data"]
+    _wait_terminal(env.client, created["query_id"])
+    query_id = created["query_id"]
+    payload = {
+        "client_send_at": "2026-09-20T10:00:00+00:00",
+        "first_sse_token_received_at": "2026-09-20T10:00:03.820Z",
+        "first_token_rendered_at": "2026-09-20T10:00:03.910Z",
+        "network_context": {"network_type": "office_broadband", "region": "cn"},
+    }
+    headers = {"X-Client-Instance-Id": "device-uuid-1"}
+
+    first = env.client.post(
+        f"/api/v1/queries/{query_id}/client-metrics", json=payload, headers=headers
+    )
+    replay = env.client.post(
+        f"/api/v1/queries/{query_id}/client-metrics", json=payload, headers=headers
+    )
+
+    assert first.status_code == 204
+    assert replay.status_code == 204
+    row = env.conn.execute(
+        "SELECT client_ttft_ms, client_instance_id_hash,"
+        " network_context_json FROM query_client_metrics WHERE query_run_id = ?",
+        (query_id,),
+    ).fetchone()
+    assert row[0] == 3910  # rendered - send
+    assert row[1] and row[1] != "device-uuid-1"  # 只落 SHA-256
+    assert '"region"' in row[2]
+
+    bad_order = env.client.post(
+        f"/api/v1/queries/{query_id}/client-metrics",
+        json={
+            "client_send_at": "2026-09-20T10:00:05+00:00",
+            "first_sse_token_received_at": "2026-09-20T10:00:03.820Z",
+            "first_token_rendered_at": "2026-09-20T10:00:03.910Z",
+        },
+    )
+    assert bad_order.status_code == 400
+
+
+def test_query_metrics_aggregates_percentiles_and_failure_rate(runtime):
+    """聚合指标：最近邻秩分位只取成功样本，失败率与降级计数正确"""
+    env = runtime
+    run_repo = SQLiteQueryRunRepository(env.conn)
+    ttfts = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+    for position, ttft in enumerate(ttfts):
+        run = run_repo.create(kb_id=env.kb_id, question=f"问题{position}", config_ids={})
+        run_repo.mark_running(run.id)
+        env.conn.execute(
+            "UPDATE query_runs SET server_ttft_ms = ? WHERE id = ?",
+            (ttft, run.id),
+        )
+        if position == 9:
+            run_repo.finalize(
+                run.id, state="failed",
+                error_code="INTERNAL_ERROR", error_message="boom",
+            )
+        else:
+            env.conn.execute(
+                "UPDATE query_runs SET input_tokens = 30, output_tokens = 20"
+                " WHERE id = ?",
+                (run.id,),
+            )
+            run_repo.finalize(run.id, state="completed")
+
+    response = env.client.get("/api/v1/metrics/queries")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    # 最近邻秩法：10 个成功样本的 P95 = ceil(0.95*10)=10 → 最大值 900？
+    # 实际样本为前 9 个成功（第 10 个失败不入分位）→ P95 = 第 9 个 900
+    assert data["ttft_sample_size"] == 9
+    assert data["p50_ttft_ms"] == 500
+    assert data["p95_ttft_ms"] == 900
+    assert data["p99_ttft_ms"] == 900
+    assert data["total"] == 10
+    assert data["completed"] == 9
+    assert data["failed"] == 1
+    assert data["failure_rate"] == 0.1
+    assert data["input_tokens"] == 30 * 9 and data["output_tokens"] == 20 * 9

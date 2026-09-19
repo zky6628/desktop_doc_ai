@@ -58,6 +58,7 @@ class ScriptedGenerationGateway:
         self.error = error
         self.on_pause = on_pause
         self.calls: list[list[dict]] = []
+        self.last_usage = (12, 6)
 
     def stream_answer(self, messages):
         self.calls.append(list(messages))
@@ -338,6 +339,75 @@ def test_idempotency_replay_returns_same_run_without_restart(query_env):
     assert replay.id == first.id
     _wait_terminal(env.run_repo, first.id)
     assert len(env.generation.calls) == 1
+
+
+def test_candidates_segments_and_usage_recorded(query_env):
+    """候选快照（各阶段分数与 in_context）与分段指标/用量落库"""
+    env = query_env
+    add_active_document(
+        env,
+        display_name="手册.pdf",
+        sha="a" * 64,
+        items=[
+            # 预分词文本须与 jieba 对该句的真实产出一致（短语合同）
+            ("员工累计工作满一年可享受五天带薪年假。", [1.0, 0.0, 0.0, 0.0], "员工 累计 工作 满 一年 可 享受 五天 带薪 年 假 。"),
+            ("香蕉属于热带水果。", [0.0, 1.0, 0.0, 0.0], "香蕉 属于 热带 水果 。"),
+        ],
+    )
+    env.embedder.vector = [1.0, 0.0, 0.0, 0.0]
+    env.generation.deltas = ["根据[S1]回答"]
+    env.generation.last_usage = (30, 20)
+
+    run = env.orchestrator.start_query(kb_id=env.kb_id, question="带薪年假")
+    final = _wait_terminal(env.run_repo, run.id)
+    assert final.state.value == "completed"
+
+    rows = env.conn.execute(
+        "SELECT chunk_id, source, vector_rank, keyword_rank, rrf_rank,"
+        " rerank_rank, rerank_score, in_context FROM retrieval_candidates"
+        " WHERE query_run_id = ? ORDER BY rrf_rank",
+        (run.id,),
+    ).fetchall()
+    assert len(rows) == 2
+    first = rows[0]
+    # 首候选双路命中且进入上下文，重排排名 1
+    assert first[1] == "dual"
+    assert first[2] == 1 and first[3] == 1
+    assert first[5] == 1 and first[6] is not None
+    assert first[7] == 1
+    # 次候选仅向量路命中；同父邻接扩展进入上下文；重排排名 2
+    second = rows[1]
+    assert second[1] == "vector"
+    assert second[2] == 2 and second[3] is None
+    assert second[5] == 2 and second[6] is not None
+    assert second[7] == 1
+
+    segments = env.conn.execute(
+        "SELECT retrieval_ms, rerank_ms, prompt_build_ms, model_ttft_ms,"
+        " input_tokens, output_tokens FROM query_runs WHERE id = ?",
+        (run.id,),
+    ).fetchone()
+    assert all(value is not None and value >= 0 for value in segments[:4])
+    assert segments[4] == 30 and segments[5] == 20
+
+
+def test_purge_expired_tokens_removes_only_expired(query_env):
+    """懒清理只删除已过期 token 批次，未过期与终态事件保留"""
+    env = query_env
+    run = env.run_repo.create(kb_id=env.kb_id, question="问题", config_ids={})
+    env.event_store.append(
+        run.id, event_type="tokens", token_text="旧批次", expires_at="2000-01-01T00:00:00+00:00"
+    )
+    env.event_store.append(
+        run.id, event_type="tokens", token_text="新批次",
+        expires_at="2999-01-01T00:00:00+00:00",
+    )
+
+    purged = env.event_store.purge_expired_tokens()
+
+    assert purged == 1
+    remaining = env.event_store.read_after(run.id)
+    assert [event.token_text for event in remaining] == ["新批次"]
 
 
 def test_fail_interrupted_recovers_stale_runs(query_env):

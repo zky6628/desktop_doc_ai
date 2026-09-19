@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """任务引擎表 schema 测试：CHECK 约束、外键行为与唯一键"""
 import sqlite3
 
@@ -22,7 +22,7 @@ from .schema_helpers import (
 def db(tmp_path):
     """应用全部迁移并开启外键的临时库连接"""
     db_path, applied = fresh_db(tmp_path, name="schema_tasks.db")
-    assert applied == 8
+    assert applied == 9
     conn = connect(db_path)
     yield conn
     conn.close()
@@ -131,3 +131,4 @@ def test_external_task_requires_existing_task(db):
     """外部任务必须挂接在已存在的任务上"""
     with pytest.raises(sqlite3.IntegrityError):
         insert_external_task(db, "01900000-0000-7000-8000-000000000000")
+

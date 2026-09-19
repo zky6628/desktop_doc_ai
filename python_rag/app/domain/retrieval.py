@@ -101,6 +101,24 @@ class RetrievalCandidate:
 
 
 @dataclass(frozen=True)
+class CandidateRecord:
+    """待持久化的候选快照行（各阶段排名/分数与是否进入上下文）"""
+
+    query_run_id: str
+    chunk_id: str | None
+    source: str
+    vector_rank: int | None
+    vector_score: float | None
+    keyword_rank: int | None
+    keyword_score: float | None
+    rrf_rank: int
+    rrf_score: float
+    rerank_rank: int | None
+    rerank_score: float | None
+    in_context: bool
+
+
+@dataclass(frozen=True)
 class RetrievalOutcome:
     """一次检索的产出：融合候选与被丢弃的命中计数
 

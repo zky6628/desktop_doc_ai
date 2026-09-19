@@ -81,11 +81,18 @@ class DashScopeGenerationGateway(GenerationGatewayPort):
         self._model = model
         self._max_tokens = max_tokens
         self._request_timeout = request_timeout
+        self._last_usage: tuple[int, int] | None = None
+
+    @property
+    def last_usage(self) -> tuple[int, int] | None:
+        """最近一次流式生成的供应方用量 (输入, 输出) token（无则 None）"""
+        return self._last_usage
 
     def stream_answer(
         self, messages: Sequence[dict[str, str]]
     ) -> Iterator[str]:
         """按消息序列流式生成回答（方法契约见领域 Port 定义）"""
+        self._last_usage = None
         try:
             response_stream = self._invoke(
                 self._model,
@@ -104,7 +111,8 @@ class DashScopeGenerationGateway(GenerationGatewayPort):
             ) from exc
 
     def _iterate(self, response_stream: Any) -> Iterator[str]:
-        """逐段产出增量文本并校验响应结构"""
+        """逐段产出增量文本并校验响应结构（末次用量随流捕获）"""
+        usage: tuple[int, int] | None = None
         for response in response_stream:
             status_code = getattr(response, "status_code", None)
             if status_code != 200:
@@ -116,8 +124,14 @@ class DashScopeGenerationGateway(GenerationGatewayPort):
             delta = getattr(message, "content", None)
             if not isinstance(delta, str):
                 raise GenerationProtocolViolationError("响应缺少增量文本")
+            response_usage = getattr(response, "usage", None)
+            input_tokens = getattr(response_usage, "input_tokens", None)
+            output_tokens = getattr(response_usage, "output_tokens", None)
+            if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+                usage = (input_tokens, output_tokens)
             if delta:
                 yield delta
+        self._last_usage = usage
 
     def _raise_for_error_response(self, response: Any) -> None:
         """把非 200 响应映射为领域错误（消息不含密钥与正文）"""

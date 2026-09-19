@@ -27,7 +27,7 @@ from .ingest import ImportOutcome
 from .keyword import KeywordDocument
 from .parsing import ParsedDocument
 from .rerank import RerankHit
-from .retrieval import ChunkAnchor, IndexHit
+from .retrieval import CandidateRecord, ChunkAnchor, IndexHit
 
 
 class KnowledgeBaseRepository(ABC):
@@ -301,8 +301,15 @@ class GenerationGateway(ABC):
     """生成网关：流式回答的供应方边界
 
     输出为增量文本片段的迭代器（按生成顺序）；瞬态失败以领域错误
-    表达，由查询链路决定重试与终态策略，网关内部不重试
+    表达，由查询链路决定重试与终态策略，网关内部不重试。实现须在
+    流结束后经 last_usage 暴露供应方用量 (输入, 输出) token（供应方
+    未提供时为 None）
     """
+
+    @property
+    @abstractmethod
+    def last_usage(self) -> tuple[int, int] | None:
+        """最近一次流式生成的供应方用量 (输入, 输出) token"""
 
     @abstractmethod
     def stream_answer(
@@ -392,6 +399,43 @@ class QueryRunRepository(ABC):
         查询不存在抛 EntityNotFoundError"""
 
     @abstractmethod
+    def record_segments(
+        self,
+        run_id: str,
+        *,
+        retrieval_ms: int,
+        rerank_ms: int,
+        prompt_build_ms: int,
+        model_ttft_ms: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+    ) -> None:
+        """记录分段耗时与生成用量（查询收尾前调用，幂等覆盖）；
+        查询不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def record_candidates(
+        self, run_id: str, records: Sequence[CandidateRecord]
+    ) -> int:
+        """单事务批量写入候选快照（UNIQUE(查询, 切片) 重放忽略）；
+        返回实际写入行数。查询不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def record_client_metric(
+        self,
+        run_id: str,
+        *,
+        client_send_at: str,
+        first_sse_token_received_at: str,
+        first_token_rendered_at: str,
+        client_ttft_ms: int,
+        client_instance_id_hash: str | None,
+        network_context_json: str | None,
+    ) -> bool:
+        """记录客户端遥测（主键即查询，重放忽略返回 False）；查询
+        不存在抛 EntityNotFoundError。时间顺序校验由调用方负责"""
+
+    @abstractmethod
     def fail_interrupted(self) -> int:
         """把重启残留的 queued/running/cancel_requested 查询统一置为
         failed（进程重启中断）；返回处理数量（启动恢复调用，幂等）"""
@@ -428,6 +472,11 @@ class QueryEventStore(ABC):
     def expire_tokens(self, run_id: str, expiry_horizon_seconds: int) -> None:
         """把该查询 token 批次的过期时间设为终态后保留窗（30 分钟）；
         非终态调用为空操作由执行方保证"""
+
+    @abstractmethod
+    def purge_expired_tokens(self) -> int:
+        """删除全部已过期的 token 批次行（懒清理：新查询创建时顺带
+        执行）；返回删除行数"""
 
 
 class ConversationRepository(ABC):

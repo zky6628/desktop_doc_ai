@@ -103,6 +103,17 @@ class SQLiteQueryEventStore(QueryEventStorePort):
             self._conn, _expire, f"设置查询 token 批次过期 {run_id}"
         )
 
+    def purge_expired_tokens(self) -> int:
+        """删除全部已过期 token 批次行（方法契约见领域 Port 定义）"""
+        now = utc_now_iso()
+        cursor = self._conn.execute(
+            "DELETE FROM query_events"
+            " WHERE event_type = 'tokens' AND expires_at IS NOT NULL"
+            "   AND expires_at <= ?",
+            (now,),
+        )
+        return cursor.rowcount
+
     @staticmethod
     def _to_event(row) -> QueryEvent:
         return QueryEvent(

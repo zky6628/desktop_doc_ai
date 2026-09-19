@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 内容表 schema 测试（content_blocks / tables / chunks / chunk_block_links）：
 
@@ -28,7 +28,7 @@ from .schema_helpers import (
 def _fresh_db(tmp_path):
     """创建应用过全部迁移的临时库（测试辅助）"""
     db_path, applied = fresh_db(tmp_path, name="schema_content.db")
-    assert applied == 8
+    assert applied == 9
     return db_path
 
 
@@ -190,3 +190,4 @@ def test_foreign_key_check_clean(tmp_path):
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()
+

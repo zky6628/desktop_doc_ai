@@ -91,6 +91,42 @@
         "title": "Body_upload_file_upload_file_post",
         "type": "object"
       },
+      "ClientMetricsBody": {
+        "description": "客户端遥测请求体（不含问题、回答与密钥）",
+        "properties": {
+          "client_send_at": {
+            "title": "Client Send At",
+            "type": "string"
+          },
+          "first_sse_token_received_at": {
+            "title": "First Sse Token Received At",
+            "type": "string"
+          },
+          "first_token_rendered_at": {
+            "title": "First Token Rendered At",
+            "type": "string"
+          },
+          "network_context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network Context"
+          }
+        },
+        "required": [
+          "client_send_at",
+          "first_sse_token_received_at",
+          "first_token_rendered_at"
+        ],
+        "title": "ClientMetricsBody",
+        "type": "object"
+      },
       "CloudConfirmationRequest": {
         "description": "云端确认请求体",
         "properties": {
@@ -460,6 +496,51 @@
         "summary": "Upload Documents"
       }
     },
+    "/api/v1/metrics/queries": {
+      "get": {
+        "description": "查询聚合指标：TTFT 分位、状态计数、失败率与降级计数",
+        "operationId": "query_metrics_api_v1_metrics_queries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "knowledge_base_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Knowledge Base Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Query Metrics"
+      }
+    },
     "/api/v1/queries": {
       "post": {
         "description": "创建查询运行并启动后台执行（202 + 流地址）",
@@ -589,6 +670,70 @@
           }
         },
         "summary": "Cancel Query"
+      }
+    },
+    "/api/v1/queries/{query_id}/client-metrics": {
+      "post": {
+        "description": "客户端遥测：服务端按时间戳计算 TTFT（不接收正文与密钥）",
+        "operationId": "report_client_metrics_api_v1_queries__query_id__client_metrics_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "query_id",
+            "required": true,
+            "schema": {
+              "title": "Query Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Client-Instance-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Client-Instance-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientMetricsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Report Client Metrics"
       }
     },
     "/api/v1/queries/{query_id}/events": {

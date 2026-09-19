@@ -27,6 +27,7 @@ from app.infrastructure.ingest import (
 )
 
 from .envelope import error_envelope, new_request_id, serialize_task, success_envelope
+from .metrics import MetricsDependencies, create_metrics_router
 from .queries import QueryDependencies, create_query_router
 
 # 单批次文件数上限复用上传策略常量，保证口径一致
@@ -53,6 +54,7 @@ class ApiV1Dependencies:
     orchestrator: ImportOrchestrator
     task_repo: TaskRepository
     query: QueryDependencies | None = None
+    metrics: MetricsDependencies | None = None
 
 
 class CloudConfirmationRequest(BaseModel):
@@ -71,6 +73,8 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
     if deps.query is not None:
         router.include_router(create_query_router(deps.query))
+    if deps.metrics is not None:
+        router.include_router(create_metrics_router(deps.metrics))
 
     @router.post("/knowledge-bases/{kb_id}/documents")
     def upload_documents(
@@ -206,7 +210,9 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
 __all__ = [
     "ApiV1Dependencies",
     "CloudConfirmationRequest",
+    "MetricsDependencies",
     "QueryDependencies",
     "create_api_router",
+    "create_metrics_router",
     "create_query_router",
 ]

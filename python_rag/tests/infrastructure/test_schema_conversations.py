@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """会话族 schema 测试：迁移落地、外键行为与引用快照保留"""
 import sqlite3
 
@@ -71,7 +71,7 @@ def test_migration_applies_full_set_including_conversations(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        assert applied == 8
+        assert applied == 9
         assert {"conversations", "messages", "citations"} <= tables
     finally:
         connection.close()
@@ -136,3 +136,4 @@ def test_message_role_is_constrained(conn):
 
     with pytest.raises(sqlite3.IntegrityError):
         _message(connection, conversation_id, role="system")
+

@@ -203,6 +203,96 @@ class SQLiteQueryRunRepository(QueryRunRepositoryPort):
 
         run_in_transaction(self._conn, _attach, f"回填查询消息关联 {run_id}")
 
+    def record_segments(
+        self,
+        run_id: str,
+        *,
+        retrieval_ms: int,
+        rerank_ms: int,
+        prompt_build_ms: int,
+        model_ttft_ms: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+    ) -> None:
+        """记录分段耗时与生成用量（方法契约见领域 Port 定义）"""
+
+        def _record(conn) -> None:
+            self._require(conn, run_id)
+            conn.execute(
+                "UPDATE query_runs SET retrieval_ms = ?, rerank_ms = ?,"
+                " prompt_build_ms = ?, model_ttft_ms = ?, input_tokens = ?,"
+                " output_tokens = ? WHERE id = ?",
+                (
+                    retrieval_ms, rerank_ms, prompt_build_ms, model_ttft_ms,
+                    input_tokens, output_tokens, run_id,
+                ),
+            )
+
+        run_in_transaction(self._conn, _record, f"记录查询分段指标 {run_id}")
+
+    def record_candidates(self, run_id: str, records) -> int:
+        """批量写入候选快照（方法契约见领域 Port 定义）"""
+
+        def _record(conn) -> int:
+            self._require(conn, run_id)
+            written = 0
+            for record in records:
+                cursor = conn.execute(
+                    "INSERT OR IGNORE INTO retrieval_candidates ("
+                    " id, query_run_id, chunk_id, source, vector_rank,"
+                    " vector_score, keyword_rank, keyword_score, rrf_rank,"
+                    " rrf_score, rerank_rank, rerank_score, in_context, created_at)"
+                    f" VALUES ({', '.join(['?'] * 14)})",
+                    (
+                        uuid7(), run_id, record.chunk_id, record.source,
+                        record.vector_rank, record.vector_score,
+                        record.keyword_rank, record.keyword_score,
+                        record.rrf_rank, record.rrf_score,
+                        record.rerank_rank, record.rerank_score,
+                        1 if record.in_context else 0, utc_now_iso(),
+                    ),
+                )
+                written += cursor.rowcount
+            return written
+
+        return run_in_transaction(
+            self._conn, _record, f"写入查询候选 {run_id}"
+        )
+
+    def record_client_metric(
+        self,
+        run_id: str,
+        *,
+        client_send_at: str,
+        first_sse_token_received_at: str,
+        first_token_rendered_at: str,
+        client_ttft_ms: int,
+        client_instance_id_hash: str | None,
+        network_context_json: str | None,
+    ) -> bool:
+        """记录客户端遥测（方法契约见领域 Port 定义）"""
+
+        def _record(conn) -> bool:
+            self._require(conn, run_id)
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO query_client_metrics ("
+                " query_run_id, client_send_at, first_sse_token_received_at,"
+                " first_token_rendered_at, client_ttft_ms,"
+                " client_instance_id_hash, network_context_json, reported_at)"
+                f" VALUES ({', '.join(['?'] * 8)})",
+                (
+                    run_id, client_send_at, first_sse_token_received_at,
+                    first_token_rendered_at, client_ttft_ms,
+                    client_instance_id_hash, network_context_json,
+                    utc_now_iso(),
+                ),
+            )
+            return cursor.rowcount > 0
+
+        return run_in_transaction(
+            self._conn, _record, f"记录客户端遥测 {run_id}"
+        )
+
     def fail_interrupted(self) -> int:
         def _fail(conn) -> int:
             now = utc_now_iso()
