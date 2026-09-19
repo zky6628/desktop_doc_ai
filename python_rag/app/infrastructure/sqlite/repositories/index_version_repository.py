@@ -144,6 +144,37 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
         ).fetchall()
         return [self._to_entity(row) for row in rows]
 
+    def list_all(self) -> list:
+        """列出全部索引版本（方法契约见领域 Port 定义）"""
+        rows = self._conn.execute(
+            "SELECT id, document_version_id, index_no, status, parser_config_id,"
+            " chunking_config_id, embedding_profile_id, vector_collection, fts_namespace,"
+            " chunk_count, integrity_hash, created_at, activated_at, retired_at"
+            " FROM index_versions ORDER BY created_at, id"
+        ).fetchall()
+        return [self._to_entity(row) for row in rows]
+
+    def delete(self, index_id: str) -> int:
+        """删除残留索引版本行（方法契约见领域 Port 定义）"""
+
+        def _delete(conn) -> int:
+            # 状态守卫：激活历史（active/retired）承载审计事实不可删，
+            # 只回收从未激活过的残留行
+            cursor = conn.execute(
+                "DELETE FROM index_versions WHERE id = ? AND status IN (?, ?, ?)",
+                (
+                    index_id,
+                    IndexVersionStatus.STAGING.value,
+                    IndexVersionStatus.VALIDATING.value,
+                    IndexVersionStatus.FAILED.value,
+                ),
+            )
+            return cursor.rowcount
+
+        return run_in_transaction(
+            self._conn, _delete, f"删除残留索引版本 {index_id}"
+        )
+
     def activate(self, index_id: str) -> IndexVersion:
         """激活事务：退役既有 active、激活目标、回填文档版本指针，
         并在事务内校验双向一致后返回激活后的实体"""

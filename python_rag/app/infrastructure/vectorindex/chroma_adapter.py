@@ -51,6 +51,10 @@ class ChromaVectorIndexAdapter(VectorIndexGatewayPort):
         if collection is not None:
             self._client.delete_collection(collection_name)
 
+    def list_collections(self) -> list[str]:
+        """返回向量库内全部集合名（方法契约见领域 Port 定义）"""
+        return [collection.name for collection in self._client.list_collections()]
+
     def _try_get_collection(self, collection_name: str) -> Any | None:
         """读取既有集合；不存在返回 None（不产生创建副作用）"""
         try:

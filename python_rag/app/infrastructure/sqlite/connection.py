@@ -39,6 +39,11 @@ def connect(db_path: str, busy_timeout_ms: int | None = None) -> sqlite3.Connect
         isolation_level=None,
         timeout=timeout / 1000.0,
         check_same_thread=False,
+        # 语句缓存按 SQL 文本共享预编译条目：共享连接被多线程并发
+        # 使用时（Worker 心跳线程与 HTTP 线程池），同名 SQL 的并发
+        # 执行会竞争同一缓存条目并被对方重置，触发 InterfaceError；
+        # 禁用缓存使每条语句独立编译，语句级互不干扰
+        cached_statements=0,
     )
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")

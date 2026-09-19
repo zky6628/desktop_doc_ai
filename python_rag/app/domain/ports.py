@@ -157,8 +157,25 @@ class IndexVersionRepository(ABC):
         """按 ID 读取；不存在时返回 None"""
 
     @abstractmethod
+    def list_all(self) -> list[IndexVersion]:
+        """列出全部索引版本（按创建时间升序）
+
+        健康检查与补偿清理的全量扫描入口；孤儿派生资产的归属判定
+        也以此为事实源
+        """
+
+    @abstractmethod
     def list_by_document_version(self, document_version_id: str) -> list[IndexVersion]:
         """列出文档版本的全部索引版本（按索引号升序）"""
+
+    @abstractmethod
+    def delete(self, index_id: str) -> int:
+        """删除残留索引版本行（补偿清理用）
+
+        仅允许删除从未激活过的行（staging/validating/failed）；活动
+        与退役行承载激活历史与验证基准，不受本方法影响。返回删除
+        行数（0 = 状态不允许或不存在）。调用方须先清理该版本的切片
+        与派生索引资产，行删除是清扫的最后一步"""
 
     @abstractmethod
     def activate(self, index_id: str) -> IndexVersion:
@@ -242,6 +259,18 @@ class ChunkRepository(ABC):
         向量化与验证阶段以此读取切片事实；索引版本不存在抛
         EntityNotFoundError"""
 
+    @abstractmethod
+    def count_index_chunks(self, index_version_id: str) -> int:
+        """返回该索引版本的切片行数（健康检查与清理的目标判定用）；
+        索引版本不存在返回 0"""
+
+    @abstractmethod
+    def delete_index_chunks(self, index_version_id: str) -> int:
+        """删除该索引版本的全部切片与定位关系（补偿清理用，单事务）
+
+        定位关系随切片一并删除；索引版本不存在时无操作。返回删除
+        的切片数"""
+
 
 class VectorIndexGateway(ABC):
     """向量索引网关：Chroma 等向量库的供应方边界（写入与验证侧）
@@ -271,6 +300,13 @@ class VectorIndexGateway(ABC):
     def delete_collection(self, collection_name: str) -> None:
         """删除整个集合（补偿清理用）；集合不存在时无操作"""
 
+    @abstractmethod
+    def list_collections(self) -> list[str]:
+        """返回向量库内全部集合名
+
+        健康检查与补偿清理据此扫描孤儿集合（归属由命名合同解析，
+        无 metadata 可依赖）"""
+
 
 class KeywordIndexGateway(ABC):
     """关键词索引网关：FTS5 命名空间的写入与验证（写入侧）
@@ -292,6 +328,13 @@ class KeywordIndexGateway(ABC):
     @abstractmethod
     def count_documents(self, namespace: str) -> int:
         """返回命名空间内文档数量；命名空间不存在返回 0"""
+
+    @abstractmethod
+    def list_namespaces(self) -> list[str]:
+        """返回虚拟表内已存在的全部命名空间
+
+        健康检查与补偿清理据此扫描孤儿命名空间（命名空间即行集合，
+        存在性由行承载）"""
 
 
 class TextTokenizer(ABC):
@@ -438,6 +481,22 @@ class TaskRepository(ABC):
     @abstractmethod
     def list_events(self, task_id: str) -> list[TaskEvent]:
         """按写入顺序读取任务的全部审计事件"""
+
+    @abstractmethod
+    def append_event(
+        self, task_id: str, event_type: str, *, detail_json: str | None = None
+    ) -> TaskEvent:
+        """追加一条审计事件（状态快照取任务当前值）
+
+        清扫等无状态迁移的工作用它记录动作摘要，保证清理动作可
+        审计。任务不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def count_non_terminal_by_document_version(self, document_version_id: str) -> int:
+        """统计引用该文档版本且尚未进入终态的任务数
+
+        补偿清理的守卫依据：存在在途任务时其文档版本的 staging
+        索引可能被续跑复用，不得清理"""
 
     @abstractmethod
     def claim_next(

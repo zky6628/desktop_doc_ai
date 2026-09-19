@@ -290,6 +290,50 @@ class SQLiteTaskRepository(TaskRepositoryPort):
         ).fetchall()
         return [self._event_to_entity(row) for row in rows]
 
+    def append_event(
+        self, task_id: str, event_type: str, *, detail_json: str | None = None
+    ) -> TaskEvent:
+        """追加一条审计事件（方法契约见领域 Port 定义）"""
+
+        def _append(conn) -> TaskEvent:
+            row = self._get_row(conn, task_id)
+            if row is None:
+                raise EntityNotFoundError(f"任务不存在: {task_id}")
+            task = self._to_entity(row)
+            created_at = utc_now_iso()
+            self._insert_event(
+                conn,
+                task_id=task_id,
+                event_type=event_type,
+                state=task.state,
+                stage=task.stage,
+                attempt_count=task.attempt_count,
+                worker=task.lease_owner,
+                created_at=created_at,
+                detail_json=detail_json,
+            )
+            # 事件主键由共享写入生成，按同秒内最后写入的行取回
+            event_row = conn.execute(
+                f"SELECT {_EVENT_COLUMNS} FROM task_events"
+                " WHERE task_id = ? ORDER BY rowid DESC LIMIT 1",
+                (task_id,),
+            ).fetchone()
+            return self._event_to_entity(event_row)
+
+        return run_in_transaction(
+            self._conn, _append, f"记录任务 {task_id} 的 {event_type} 事件"
+        )
+
+    def count_non_terminal_by_document_version(self, document_version_id: str) -> int:
+        """统计引用该文档版本的非终态任务数（方法契约见领域 Port 定义）"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM tasks"
+            " WHERE document_version_id = ?"
+            f" AND state IN ({_PENDING_STATE_PLACEHOLDERS})",
+            (document_version_id, *_PENDING_STATE_VALUES),
+        ).fetchone()
+        return row[0]
+
     def claim_next(
         self, worker_id: str, task_type: str | None = None
     ) -> Task | None:

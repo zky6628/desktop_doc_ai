@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""导入任务 Worker：领取解析任务、执行本地/云端路线并落库解析结果
+"""导入任务 Worker：领取任务、执行导入/索引重建/补偿清理并落库结果
 
-编排模型：单线程循环领取导入任务，按任务阶段判定执行路径——本地
-解析、云端全流程（提交/上传/登记/轮询/下载/归一化）或断点续跑。
-阶段边界统一执行租约复核与取消检查：租约复核借道心跳续约，失效即
-终止本次处理，杜绝无租约写入；取消请求在检查点收尾为取消终态。
+编排模型：单线程循环按任务类型分派——导入任务按阶段判定执行路径
+（本地解析、云端全流程或断点续跑）；索引重建任务从已落库解析事实
+重放管线到原子激活；清理任务执行全量幂等清扫。阶段边界统一执行
+租约复核与取消检查：租约复核借道心跳续约，失效即终止本次处理，
+杜绝无租约写入；取消请求在检查点收尾为取消终态。
 
 批次事实以外部任务表为唯一事实源：已登记批次直接恢复轮询，不重复
 提交批次。轮询等待可被停止事件中断，停止时任务留在等待外部结果
@@ -20,6 +21,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 
 from app.domain import embedding, keyword, parser_routing
 from app.domain.chunking import (
@@ -52,9 +54,11 @@ from app.domain.errors import (
     ParsingError,
     RepositoryError,
     TaskLeaseLostError,
+    TaskQueueFullError,
     TaskStateConflictError,
     UnsupportedFormatError,
 )
+from app.domain.index_maintenance import collection_name, fts_namespace_name
 from app.domain.keyword import KeywordDocument
 from app.domain.parsing import ParsedDocument
 from app.domain.ports import (
@@ -72,6 +76,7 @@ from app.domain.ports import (
     VectorIndexGateway,
 )
 from app.domain.task_state import HEARTBEAT_INTERVAL_SECONDS
+from app.infrastructure.maintenance import IndexCleanupService
 from app.infrastructure.mineru import (
     MinerUClient,
     normalize_archive,
@@ -94,6 +99,15 @@ logger = logging.getLogger(__name__)
 # 队列空转时的等待间隔（秒）：无任务可领取时的轮询节奏
 _IDLE_SECONDS = 1.0
 
+# 周期兜底扫描间隔（秒）：无导入活动时残留清理的发现节奏。
+# 成功激活后的清理任务即时覆盖主路径，本扫描保证长期驻留进程的
+# 失败/取消残留也不会超过保留期限
+_SWEEP_SCAN_INTERVAL_SECONDS = 6 * 3600
+
+# 清理补偿任务的派生深度上限：补偿任务失败时自动再派生一层，
+# 达到上限后停止（防永久不可清理资源导致任务无限派生）
+_MAX_CLEANUP_COMPENSATION_DEPTH = 3
+
 # 各阶段的标准进度取值：阶段推进时写入，供任务中心展示
 # （嵌入阶段的进度随批次推进单独计算，不使用静态值）
 _STAGE_PROGRESS: dict[TaskStage, float] = {
@@ -107,19 +121,13 @@ _STAGE_PROGRESS: dict[TaskStage, float] = {
     TaskStage.WRITING_KEYWORD_INDEX: 0.96,
     TaskStage.VALIDATING_INDEX: 0.97,
     TaskStage.ACTIVATING_VERSION: 0.99,
+    TaskStage.CLEANING_UP: 0.5,
     TaskStage.COMPLETED: 1.0,
 }
 
 # 嵌入批次进度区间：在切片完成与向量写入完成之间线性推进
 _EMBED_PROGRESS_BASE = 0.85
 _EMBED_PROGRESS_SPAN = 0.05
-
-# 向量集合命名前缀：集合按索引版本隔离，名字编码归属
-# （补偿清理以名字解析索引版本，不写 metadata）
-_COLLECTION_PREFIX = "wb-idx-"
-
-# FTS 命名空间命名前缀：与向量集合同构，名字编码归属
-_FTS_NAMESPACE_PREFIX = "fts-"
 
 # 本地解析器注册表：键为受控暂存扩展名（上传白名单保证取值受控）。
 # 解析器无状态，可安全复用实例
@@ -161,6 +169,25 @@ def _read_route(input_json: str | None) -> dict:
     if not isinstance(route, dict) or "mode" not in route:
         raise ValueError("任务输入的路由决策结构不符")
     return route
+
+
+def _read_compensation_depth(input_json: str | None) -> int:
+    """读取清理任务的补偿深度（未提供为 0）
+
+    :param input_json: 清理任务输入 JSON 文本
+    :return: 已派生的补偿层数
+    :raises (ValueError, TypeError): 输入结构不符（内部事实被破坏，
+        按内部错误转入失败终态，不盲目猜测深度）
+    """
+    if not input_json:
+        return 0
+    payload = json.loads(input_json)
+    if not isinstance(payload, dict):
+        raise TypeError("清理任务输入的结构不符")
+    depth = payload.get("compensation_depth", 0)
+    if not isinstance(depth, int) or isinstance(depth, bool):
+        raise TypeError("清理任务的补偿深度取值类型不符")
+    return depth
 
 
 def _remove_tree(path: str) -> None:
@@ -224,6 +251,14 @@ class ImportTaskWorker:
         self._mineru = mineru_client
         self._work_dir = work_dir
         self._worker_id = worker_id
+        self._cleanup = IndexCleanupService(
+            index_repo=index_repo,
+            chunk_repo=chunk_repo,
+            task_repo=task_repo,
+            vector_index=vector_index,
+            keyword_index=keyword_index,
+            work_dir=work_dir,
+        )
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -245,14 +280,18 @@ class ImportTaskWorker:
         return thread
 
     def run_forever(self) -> None:
-        """阻塞执行主循环：恢复中断任务 -> 领取并处理 -> 空转等待
+        """阻塞执行主循环：恢复中断任务 -> 周期兜底扫描 -> 领取并处理
 
         单次循环失败只记录并继续，不终止 Worker；停止事件触发后
         在当前等待点退出
         """
+        next_scan = time.monotonic()
         while not self._stop.is_set():
             try:
                 self._task_repo.recover_interrupted_tasks()
+                if time.monotonic() >= next_scan:
+                    self._spawn_cleanup_task_if_residue()
+                    next_scan = time.monotonic() + _SWEEP_SCAN_INTERVAL_SECONDS
                 processed = self.process_next()
             except Exception as exc:  # noqa: BLE001 - 循环边界兜底：单次失败不终止 Worker
                 logger.warning(
@@ -262,17 +301,32 @@ class ImportTaskWorker:
             if not processed:
                 self._stop.wait(_IDLE_SECONDS)
 
+    def _spawn_cleanup_task_if_residue(self) -> None:
+        """周期兜底扫描：发现可清理残留时登记清理任务
+
+        只读扫描发现残留才建任务，干净系统不产生任务噪音；队列满时
+        跳过，由下一轮扫描接续
+        """
+        if not self._cleanup.find_targets():
+            return
+        try:
+            self._task_repo.create("cleanup")
+            logger.info("发现可清理残留，已登记清理任务")
+        except TaskQueueFullError:
+            logger.warning("清理任务创建被拒（队列已满），留待下轮扫描")
+
     def process_next(self) -> bool:
-        """领取并处理一个导入任务
+        """领取并处理一个任务（导入/索引重建/补偿清理）
 
         :return: 本轮是否处理了任务（无可领取任务为 False）
         """
-        task = self._task_repo.claim_next(self._worker_id, task_type="import")
+        task = self._task_repo.claim_next(self._worker_id)
         if task is None:
             return False
         logger.info(
-            "领取任务 %s (stage=%s)",
+            "领取任务 %s (type=%s, stage=%s)",
             task.id,
+            task.task_type,
             task.stage.value if task.stage else "无",
         )
         heartbeat_stop = self._start_heartbeat(task.id)
@@ -338,13 +392,21 @@ class ImportTaskWorker:
             raise _TaskInterrupted() from None
 
     def _dispatch(self, task: Task) -> None:
-        """按任务阶段判定执行路径
+        """按任务类型与阶段判定执行路径
 
-        阶段是路径判定的权威依据：确认服务批准后把阶段推进到云端
-        提交，使升级路线无需额外的标记字段；云端各中断点的续跑由
-        外部任务记录与阶段共同决定
+        导入任务的阶段是路径判定的权威依据：确认服务批准后把阶段
+        推进到云端提交，使升级路线无需额外的标记字段；云端各中断点
+        的续跑由外部任务记录与阶段共同决定
         """
         self._checkpoint(task.id)
+        if task.task_type == "cleanup":
+            self._run_cleanup(task)
+            return
+        if task.task_type == "rebuild_index":
+            self._run_rebuild(task)
+            return
+        if task.task_type != "import":
+            raise RuntimeError(f"不支持的任务类型: {task.task_type}")
         stage = task.stage
         if stage is None:
             route = _read_route(task.input_json)
@@ -404,6 +466,75 @@ class ImportTaskWorker:
             return
 
         self._persist_parsed(task, version, parsed)
+
+    def _run_cleanup(self, task: Task) -> None:
+        """补偿清理：执行一次全量幂等清扫并记录审计摘要
+
+        单条目标失败不阻断清扫；全部失败均为文件系统瞬态错误时走
+        自动重试，否则转失败终态并由有界补偿任务接续
+        """
+        self._set_stage(task.id, TaskStage.CLEANING_UP)
+        try:
+            report = self._cleanup.sweep()
+        except OSError as exc:
+            # 目标发现阶段的整体失败（目录/向量库不可达）：按瞬态重试
+            self._retry(task.id, "CLEANUP_TRANSIENT", str(exc))
+            return
+        self._task_repo.append_event(
+            task.id, "cleanup_summary", detail_json=report.summary_json()
+        )
+        if not report.failures:
+            self._succeed(task.id)
+            return
+        if all(failure.transient for failure in report.failures):
+            finished = self._retry(
+                task.id,
+                "CLEANUP_TRANSIENT",
+                f"{len(report.failures)} 项清理目标暂不可达",
+            )
+        else:
+            finished = self._fail(
+                task.id,
+                "CLEANUP_INCOMPLETE",
+                f"{len(report.failures)} 项清理目标无法删除",
+            )
+        if finished is not None and finished.state is TaskStatus.FAILED:
+            self._spawn_cleanup_compensation(task)
+
+    def _spawn_cleanup_compensation(self, failed: Task) -> None:
+        """清理终态失败后创建有界补偿任务
+
+        每层补偿携带派生深度，达到上限后停止自动派生（防永久不可
+        清理的资源导致任务无限增长），残留由周期扫描与人工重试兜底
+        """
+        depth = _read_compensation_depth(failed.input_json)
+        if depth >= _MAX_CLEANUP_COMPENSATION_DEPTH:
+            logger.warning(
+                "清理补偿深度已达上限，停止自动派生 %s", failed.id
+            )
+            return
+        try:
+            self._task_repo.create(
+                "cleanup",
+                parent_task_id=failed.id,
+                input_json=json.dumps(
+                    {"compensation_depth": depth + 1},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+            logger.info("已创建清理补偿任务（深度 %d）", depth + 1)
+        except TaskQueueFullError:
+            logger.warning("清理补偿任务创建被拒（队列已满），留待周期扫描")
+
+    def _run_rebuild(self, task: Task) -> None:
+        """索引重建：从已落库解析事实重建双索引并原子切换
+
+        目标文档版本须已完成解析（供健康检查确认派生索引损坏后
+        发起）；切片从解析事实确定性重放，向量以真实网关重嵌，新
+        索引验证通过前不触碰既有活动索引，任何失败零损伤
+        """
+        self._run_chunking(task, self._require_version(task))
 
     def _run_cloud(self, task: Task) -> None:
         """云端路线：提交（或恢复既有批次）-> 轮询 -> 转下载阶段"""
@@ -607,7 +738,16 @@ class ImportTaskWorker:
         self._index_repo.activate(index_version.id)
         # 首个活动版本产生即文档就绪；多版本时最新激活胜出
         self._document_repo.set_active_version(version.document_id, version.id)
+        # 激活使旧活动索引退役：其派生资产由清理任务回收
+        self._spawn_cleanup_task()
         self._succeed(task.id)
+
+    def _spawn_cleanup_task(self) -> None:
+        """激活完成后登记清理任务，退役索引的派生资产由此回收"""
+        try:
+            self._task_repo.create("cleanup")
+        except TaskQueueFullError:
+            logger.warning("清理任务创建被拒（队列已满），留待周期扫描")
 
     def _embed_and_write(
         self, task: Task, collection: str, children: list[StoredChunk]
@@ -715,7 +855,7 @@ class ImportTaskWorker:
 
     def _collection_name(self, index_version: IndexVersion) -> str:
         """解析索引版本的向量集合名并保证已登记（幂等）"""
-        name = f"{_COLLECTION_PREFIX}{index_version.id}"
+        name = collection_name(index_version.id)
         if index_version.vector_collection != name:
             self._index_repo.set_vector_collection(index_version.id, name)
         return name
@@ -736,7 +876,7 @@ class ImportTaskWorker:
 
     def _fts_namespace(self, index_version: IndexVersion) -> str:
         """解析索引版本的 FTS 命名空间并保证已登记（幂等）"""
-        namespace = f"{_FTS_NAMESPACE_PREFIX}{index_version.id}"
+        namespace = fts_namespace_name(index_version.id)
         if index_version.fts_namespace != namespace:
             self._index_repo.set_fts_namespace(index_version.id, namespace)
         return namespace
@@ -825,28 +965,43 @@ class ImportTaskWorker:
         records = self._external_repo.list_by_task(task_id)
         return records[0] if records else None
 
-    def _fail(self, task_id: str, error_code: str, message: str) -> None:
-        """转入失败终态；租约已丢失时放弃写入，交由恢复流程接管"""
+    def _fail(
+        self, task_id: str, error_code: str, message: str
+    ) -> Task | None:
+        """转入失败终态；租约已丢失时放弃写入，交由恢复流程接管
+
+        :return: 失败后的任务（租约丢失写入被拒时为 None）
+        """
         try:
-            self._task_repo.fail_task(
+            task = self._task_repo.fail_task(
                 task_id,
                 self._worker_id,
                 error_code=error_code,
                 error_message=message,
             )
             logger.warning("任务失败 %s: %s", task_id, error_code)
+            return task
         except TaskLeaseLostError:
             logger.warning("任务失败写入被拒（租约丢失）%s", task_id)
+            return None
 
-    def _retry(self, task_id: str, error_code: str, message: str) -> None:
-        """安排当前阶段的自动重试；租约已丢失时放弃写入"""
+    def _retry(
+        self, task_id: str, error_code: str, message: str
+    ) -> Task | None:
+        """安排当前阶段的自动重试；租约已丢失时放弃写入
+
+        :return: 安排后的任务（重试预算耗尽即为失败终态；租约丢失
+            写入被拒时为 None）
+        """
         try:
-            self._task_repo.schedule_retry(
+            task = self._task_repo.schedule_retry(
                 task_id,
                 self._worker_id,
                 error_code=error_code,
                 error_message=message,
             )
             logger.warning("任务安排自动重试 %s: %s", task_id, error_code)
+            return task
         except TaskLeaseLostError:
             logger.warning("任务重试写入被拒（租约丢失）%s", task_id)
+            return None

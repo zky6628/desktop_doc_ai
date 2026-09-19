@@ -128,6 +128,35 @@ class SQLiteChunkRepository(ChunkRepositoryPort):
                 (chunk_id, block_id, CHUNK_BLOCK_RELATION_EXACT),
             )
 
+    def count_index_chunks(self, index_version_id: str) -> int:
+        """返回该索引版本的切片行数（方法契约见领域 Port 定义）"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM chunks WHERE index_version_id = ?",
+            (index_version_id,),
+        ).fetchone()
+        return row[0]
+
+    def delete_index_chunks(self, index_version_id: str) -> int:
+        """删除该索引版本全部切片与定位关系（方法契约见领域 Port 定义）"""
+
+        def _delete(conn) -> int:
+            conn.execute(
+                "DELETE FROM chunk_block_links WHERE chunk_id IN"
+                " (SELECT id FROM chunks WHERE index_version_id = ?)",
+                (index_version_id,),
+            )
+            cursor = conn.execute(
+                "DELETE FROM chunks WHERE index_version_id = ?",
+                (index_version_id,),
+            )
+            return cursor.rowcount
+
+        return run_in_transaction(
+            self._conn,
+            _delete,
+            f"删除索引版本 {index_version_id} 的切片",
+        )
+
     def list_index_chunks(self, index_version_id: str) -> list[StoredChunk]:
         """按序号升序读取切片（方法契约见领域 Port 定义）"""
         exists = self._conn.execute(

@@ -47,3 +47,10 @@ class SQLiteFtsKeywordIndex(KeywordIndexGatewayPort):
             "SELECT COUNT(*) FROM chunks_fts WHERE fts_namespace = ?", (namespace,)
         ).fetchone()
         return row[0]
+
+    def list_namespaces(self) -> list[str]:
+        """返回虚拟表内已存在的全部命名空间（方法契约见领域 Port 定义）"""
+        rows = self._conn.execute(
+            "SELECT DISTINCT fts_namespace FROM chunks_fts"
+        ).fetchall()
+        return [row[0] for row in rows]
