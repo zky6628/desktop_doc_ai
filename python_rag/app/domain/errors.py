@@ -182,6 +182,39 @@ class EmbeddingProtocolViolationError(EmbeddingError):
     error_code = "EMBEDDING_PROTOCOL_VIOLATION"
 
 
+class RerankError(RepositoryError):
+    """Rerank 网关失败的基类：错误码供查询链路失败/降级分类使用
+
+    错误消息只描述失败类别与脱敏摘要，不得携带密钥或文本内容
+    """
+
+    error_code = "RERANK_FAILED"
+
+
+class RerankTransientError(RerankError):
+    """瞬态传输/服务错误：网络中断、超时、429/408/5xx，可自动重试"""
+
+    error_code = "RERANK_TRANSIENT"
+
+
+class RerankAuthError(RerankError):
+    """认证失败：API Key 无效或被拒绝，不可自动重试"""
+
+    error_code = "RERANK_AUTH"
+
+
+class RerankQuotaError(RerankError):
+    """配额不足：欠费或额度耗尽，不可自动重试"""
+
+    error_code = "RERANK_QUOTA"
+
+
+class RerankProtocolViolationError(RerankError):
+    """响应违反协议：未知业务错误码、数量/下标/分数校验失败，不可自动重试"""
+
+    error_code = "RERANK_PROTOCOL_VIOLATION"
+
+
 class IndexValidationError(RepositoryError):
     """派生索引完整性校验失败：数量或 ID 集合与业务事实不一致
 

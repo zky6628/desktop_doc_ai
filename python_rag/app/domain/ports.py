@@ -23,6 +23,7 @@ from .entities import (
 from .ingest import ImportOutcome
 from .keyword import KeywordDocument
 from .parsing import ParsedDocument
+from .rerank import RerankHit
 from .retrieval import ChunkAnchor, IndexHit
 
 
@@ -267,6 +268,29 @@ class QueryEmbeddingGateway(ABC):
         :raises EmbeddingAuthError: 密钥无效
         :raises EmbeddingQuotaError: 配额不足
         :raises EmbeddingProtocolViolationError: 响应不符合协议
+        """
+
+
+class RerankGateway(ABC):
+    """重排网关：候选相关性重排的供应方边界
+
+    输入为问题与文档文本序列（下标语义由调用方维护，命中经下标
+    映射回切片）；瞬态失败以领域错误表达，由查询链路决定重试与
+    降级策略，网关内部不重试、不降级
+    """
+
+    @abstractmethod
+    def rerank(self, question: str, documents: Sequence[str]) -> list[RerankHit]:
+        """按问题相关性重排文档文本，返回相关度降序的前 top_n 命中
+
+        :param question: 检索问题
+        :param documents: 候选文档文本序列（与输入下标一一对应）
+        :return: 按相关度降序的命中（index 为输入下标，score 越高越
+            相关）；空输入返回空列表且不发起请求
+        :raises RerankTransientError: 网络或供应方瞬态故障
+        :raises RerankAuthError: 密钥无效
+        :raises RerankQuotaError: 配额不足
+        :raises RerankProtocolViolationError: 响应不符合协议或校验失败
         """
 
 

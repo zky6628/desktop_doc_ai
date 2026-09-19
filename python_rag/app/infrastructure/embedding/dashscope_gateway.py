@@ -22,22 +22,19 @@ from app.domain.errors import (
 )
 from app.domain.ports import EmbeddingGateway as EmbeddingGatewayPort
 from app.domain.ports import QueryEmbeddingGateway as QueryEmbeddingGatewayPort
+from app.infrastructure.dashscope_support import (
+    ErrorFamily,
+    is_transient_status,
+    resolve_code_error,
+)
 
-# 业务错误码到错误类别的映射（供应方文档口径）；
-# 前缀类码（限流族）在解析函数中按后缀细分，未列出的码按协议违规
-_CODE_ERROR_MAP: dict[str, type[Exception]] = {
-    "InvalidApiKey": EmbeddingAuthError,
-    "InvalidApiKey.NotFound": EmbeddingAuthError,
-    "AccessDenied": EmbeddingAuthError,
-    "Arrearage": EmbeddingQuotaError,
-    "AllocationQuota": EmbeddingQuotaError,
-}
-
-# 瞬态类错误码：限流族与系统流控（配额族后缀在解析时优先细分）
-_TRANSIENT_CODE_PREFIXES = ("Throttling", "SystemFlowControl")
-
-# 配额族后缀：限流码携带该后缀时语义为额度耗尽而非请求速率
-_QUOTA_CODE_MARKER = "AllocationQuota"
+# 本网关的领域错误族：业务错误码经共享口径映射到对应类别
+_EMBEDDING_ERROR_FAMILY = ErrorFamily(
+    auth=EmbeddingAuthError,
+    quota=EmbeddingQuotaError,
+    transient=EmbeddingTransientError,
+    protocol=EmbeddingProtocolViolationError,
+)
 
 
 def _invoke_sdk(
@@ -55,27 +52,6 @@ def _invoke_sdk(
         text_type=text_type,
         api_key=api_key,
     )
-
-
-def _resolve_code_error(code: str) -> type[Exception]:
-    """按供应方业务错误码解析错误类别
-
-    限流族优先细分：携带配额后缀的语义为额度耗尽（不可自动重试），
-    其余限流为请求速率类瞬态；未列出的码按协议违规处理
-    """
-    if _QUOTA_CODE_MARKER in code or code == "Arrearage":
-        return EmbeddingQuotaError
-    if any(code.startswith(prefix) for prefix in _TRANSIENT_CODE_PREFIXES):
-        return EmbeddingTransientError
-    mapped = _CODE_ERROR_MAP.get(code)
-    if mapped is not None:
-        return mapped
-    return EmbeddingProtocolViolationError
-
-
-def _is_transient_status(status_code: int) -> bool:
-    """按 HTTP 状态分层判断传输层瞬态（无业务码时的回退口径）"""
-    return status_code in (408, 429) or 500 <= status_code < 600
 
 
 class DashScopeEmbeddingGateway(EmbeddingGatewayPort, QueryEmbeddingGatewayPort):
@@ -182,10 +158,10 @@ class DashScopeEmbeddingGateway(EmbeddingGatewayPort, QueryEmbeddingGatewayPort)
         code = getattr(response, "code", None)
         message = str(getattr(response, "message", "") or "")
         if code:
-            error_type = _resolve_code_error(str(code))
+            error_type = resolve_code_error(str(code), _EMBEDDING_ERROR_FAMILY)
             raise error_type(f"供应方返回错误码 {code}: {message}")
         if status_code in (401, 403):
             raise EmbeddingAuthError(f"供应方拒绝认证: {status_code}")
-        if isinstance(status_code, int) and _is_transient_status(status_code):
+        if isinstance(status_code, int) and is_transient_status(status_code):
             raise EmbeddingTransientError(f"供应方服务瞬态不可用: {status_code}")
         raise EmbeddingProtocolViolationError(f"供应方响应状态异常: {status_code}")
