@@ -22,6 +22,7 @@ from app.domain.chunking import chunk_blocks
 from app.domain.entities import TaskStage, TaskStatus
 from app.domain.errors import CloudTransportError, EmbeddingTransientError
 from app.domain.parser_routing import decide_parser_route
+from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.mineru.archive import extract_archive
 from app.infrastructure.mineru.dto import (
     BatchPollResult,
@@ -104,6 +105,8 @@ def env(tmp_path):
             vector_index=(
                 vector_adapter if vector_index is None else vector_index
             ),
+            text_tokenizer=JiebaTokenizer(),
+            keyword_index=SQLiteFtsKeywordIndex(conn),
             mineru_client=mineru,
             work_dir=str(tmp_path / "cloud_results"),
             worker_id="worker-test",
@@ -355,7 +358,7 @@ def test_local_task_activates_index_and_document(env):
     assert indexes[0].chunking_config_id is not None
     assert indexes[0].embedding_profile_id is not None
 
-    # 向量集合与子切片一一对应，验证基准已记录
+    # 向量集合与子切片一一对应，关键词索引同步落库，验证基准已记录
     child_count = env.conn.execute(
         "SELECT COUNT(*) FROM chunks"
         " WHERE index_version_id = ? AND parent_chunk_id IS NOT NULL",
@@ -364,6 +367,21 @@ def test_local_task_activates_index_and_document(env):
     assert indexes[0].chunk_count == child_count
     assert indexes[0].integrity_hash
     assert env.vector_index.count_vectors(indexes[0].vector_collection) == child_count
+    fts_rows = env.conn.execute(
+        "SELECT COUNT(*) FROM chunks_fts WHERE fts_namespace = ?",
+        (indexes[0].fts_namespace,),
+    ).fetchone()[0]
+    assert fts_rows == child_count
+    assert indexes[0].fts_namespace == f"fts-{indexes[0].id}"
+    keyword_config_id = env.conn.execute(
+        "SELECT keyword_config_id FROM index_versions WHERE id = ?",
+        (indexes[0].id,),
+    ).fetchone()[0]
+    keyword_config = env.conn.execute(
+        "SELECT config_type FROM pipeline_configs WHERE id = ?",
+        (keyword_config_id,),
+    ).fetchone()
+    assert keyword_config[0] == "keyword"
 
     # 激活回填文档级指针并置 ready
     document = env.repos["documents"].get(task.document_id)

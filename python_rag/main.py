@@ -180,6 +180,7 @@ import chromadb
 from app.api.v1 import ApiV1Dependencies, create_api_router
 from app.domain.ids import uuid7
 from app.infrastructure.embedding import DashScopeEmbeddingGateway
+from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.ingest import ImportOrchestrator
 from app.infrastructure.mineru import MinerUClient
 from app.infrastructure.sqlite.connection import connect
@@ -694,6 +695,8 @@ if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "
         vector_index=ChromaVectorIndexAdapter(
             chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR)
         ),
+        text_tokenizer=JiebaTokenizer(),
+        keyword_index=SQLiteFtsKeywordIndex(_workbench_conn),
         mineru_client=MinerUClient(api_token=_mineru_token) if _mineru_token else None,
         work_dir=os.path.join(WORKBENCH_STAGING_DIR, "cloud_results"),
         worker_id=f"worker-{uuid7()}",

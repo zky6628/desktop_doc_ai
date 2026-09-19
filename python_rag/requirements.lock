@@ -136,6 +136,8 @@ idna==3.19
     #   yarl
 importlib-resources==7.1.0
     # via chromadb
+jieba==0.42.1
+    # via -r requirements.txt
 jinja2==3.1.6
     # via torch
 jiter==0.17.0

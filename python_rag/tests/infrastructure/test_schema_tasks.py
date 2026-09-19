@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """任务引擎表 schema 测试：CHECK 约束、外键行为与唯一键"""
 import sqlite3
 
@@ -22,7 +22,7 @@ from .schema_helpers import (
 def db(tmp_path):
     """应用全部迁移并开启外键的临时库连接"""
     db_path, applied = fresh_db(tmp_path, name="schema_tasks.db")
-    assert applied == 5
+    assert applied == 6
     conn = connect(db_path)
     yield conn
     conn.close()

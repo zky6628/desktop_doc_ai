@@ -31,6 +31,7 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
         fts_namespace: str | None = None,
         chunking_config_id: str | None = None,
         embedding_profile_id: str | None = None,
+        keyword_config_id: str | None = None,
     ) -> IndexVersion:
         def _create(conn) -> IndexVersion:
             now = utc_now_iso()
@@ -48,13 +49,14 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
             conn.execute(
                 "INSERT INTO index_versions"
                 " (id, document_version_id, index_no, status, parser_config_id,"
-                "  chunking_config_id, embedding_profile_id, vector_collection, fts_namespace,"
+                "  chunking_config_id, embedding_profile_id, keyword_config_id,"
+                "  vector_collection, fts_namespace,"
                 "  chunk_count, integrity_hash, created_at, activated_at, retired_at)"
-                " VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL)",
+                " VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL)",
                 (
                     index_id, document_version_id, next_no,
                     IndexVersionStatus.STAGING.value,
-                    chunking_config_id, embedding_profile_id,
+                    chunking_config_id, embedding_profile_id, keyword_config_id,
                     vector_collection, fts_namespace, now,
                 ),
             )
@@ -90,6 +92,18 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
             )
 
         run_in_transaction(self._conn, _set, f"登记向量集合 {index_id}")
+
+    def set_fts_namespace(self, index_id: str, namespace: str) -> None:
+        """登记 FTS 命名空间（方法契约见领域 Port 定义）"""
+
+        def _set(conn) -> None:
+            self._require_index(conn, index_id)
+            conn.execute(
+                "UPDATE index_versions SET fts_namespace = ? WHERE id = ?",
+                (namespace, index_id),
+            )
+
+        run_in_transaction(self._conn, _set, f"登记 FTS 命名空间 {index_id}")
 
     def record_validation(
         self, index_id: str, *, chunk_count: int, integrity_hash: str

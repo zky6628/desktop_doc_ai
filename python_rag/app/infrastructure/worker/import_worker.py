@@ -21,7 +21,7 @@ import os
 import shutil
 import threading
 
-from app.domain import embedding, parser_routing
+from app.domain import embedding, keyword, parser_routing
 from app.domain.chunking import (
     CHUNKING_CONFIG_TYPE,
     StoredChunk,
@@ -47,6 +47,7 @@ from app.domain.errors import (
     EmbeddingAuthError,
     EmbeddingError,
     EmbeddingTransientError,
+    EntityNotFoundError,
     IndexValidationError,
     ParsingError,
     RepositoryError,
@@ -54,6 +55,7 @@ from app.domain.errors import (
     TaskStateConflictError,
     UnsupportedFormatError,
 )
+from app.domain.keyword import KeywordDocument
 from app.domain.parsing import ParsedDocument
 from app.domain.ports import (
     ChunkRepository,
@@ -63,8 +65,10 @@ from app.domain.ports import (
     EmbeddingGateway,
     ExternalTaskRepository,
     IndexVersionRepository,
+    KeywordIndexGateway,
     PipelineConfigRepository,
     TaskRepository,
+    TextTokenizer,
     VectorIndexGateway,
 )
 from app.domain.task_state import HEARTBEAT_INTERVAL_SECONDS
@@ -99,7 +103,8 @@ _STAGE_PROGRESS: dict[TaskStage, float] = {
     TaskStage.DOWNLOADING_CLOUD_RESULT: 0.6,
     TaskStage.NORMALIZING: 0.7,
     TaskStage.CHUNKING: 0.8,
-    TaskStage.WRITING_VECTOR_INDEX: 0.95,
+    TaskStage.WRITING_VECTOR_INDEX: 0.94,
+    TaskStage.WRITING_KEYWORD_INDEX: 0.96,
     TaskStage.VALIDATING_INDEX: 0.97,
     TaskStage.ACTIVATING_VERSION: 0.99,
     TaskStage.COMPLETED: 1.0,
@@ -112,6 +117,9 @@ _EMBED_PROGRESS_SPAN = 0.05
 # 向量集合命名前缀：集合按索引版本隔离，名字编码归属
 # （补偿清理以名字解析索引版本，不写 metadata）
 _COLLECTION_PREFIX = "wb-idx-"
+
+# FTS 命名空间命名前缀：与向量集合同构，名字编码归属
+_FTS_NAMESPACE_PREFIX = "fts-"
 
 # 本地解析器注册表：键为受控暂存扩展名（上传白名单保证取值受控）。
 # 解析器无状态，可安全复用实例
@@ -170,10 +178,12 @@ class ImportTaskWorker:
     :param external_repo: 外部任务仓储（批次事实唯一事实源）
     :param index_repo: 索引版本仓储（staging 索引复用、验证结果与激活）
     :param chunk_repo: 切片仓储（切片与定位关系写入与读取）
-    :param config_repo: 流水线配置仓储（切片/嵌入配置版本行）
+    :param config_repo: 流水线配置仓储（切片/嵌入/关键词配置版本行）
     :param embedding_gateway: 文本向量化网关；未配置时嵌入阶段按
         认证失败处理（解析与切片路线不受影响）
     :param vector_index: 向量索引网关（staging 集合写入与验证）
+    :param text_tokenizer: 文本分词器（关键词索引预分词）
+    :param keyword_index: 关键词索引网关（FTS 命名空间写入与验证）
     :param mineru_client: 云端解析客户端；未配置时云端任务在提交时
         按认证失败处理（本地路线不受影响）
     :param work_dir: 云端产物受控工作目录（结果下载与解压）
@@ -193,6 +203,8 @@ class ImportTaskWorker:
         config_repo: PipelineConfigRepository,
         embedding_gateway: EmbeddingGateway | None,
         vector_index: VectorIndexGateway,
+        text_tokenizer: TextTokenizer,
+        keyword_index: KeywordIndexGateway,
         mineru_client: MinerUClient | None,
         work_dir: str,
         worker_id: str,
@@ -207,6 +219,8 @@ class ImportTaskWorker:
         self._config_repo = config_repo
         self._embedding_gateway = embedding_gateway
         self._vector_index = vector_index
+        self._text_tokenizer = text_tokenizer
+        self._keyword_index = keyword_index
         self._mineru = mineru_client
         self._work_dir = work_dir
         self._worker_id = worker_id
@@ -351,10 +365,11 @@ class ImportTaskWorker:
         elif stage in (
             TaskStage.EMBEDDING,
             TaskStage.WRITING_VECTOR_INDEX,
+            TaskStage.WRITING_KEYWORD_INDEX,
             TaskStage.VALIDATING_INDEX,
             TaskStage.ACTIVATING_VERSION,
         ):
-            # 向量管线各中断点续跑：批次游标与幂等写入保证只补尾部
+            # 索引管线各中断点续跑：批次游标与幂等写入保证只补尾部
             self._run_vector_pipeline(task, self._require_version(task))
         else:
             raise RuntimeError(f"导入任务阶段不在可执行范围: {stage.value}")
@@ -553,40 +568,25 @@ class ImportTaskWorker:
 
         切片输入读取已落库的解析事实（与内存解析模型解耦），中断
         续跑无需重新解析；写入按序号幂等 upsert，重试不产生重复。
-        切片与嵌入配置在索引创建时一并登记，保证索引版本可追溯
-        全部构建参数
+        切片/嵌入/关键词三类配置在索引创建时一并登记，保证索引版本
+        可追溯全部构建参数
         """
         self._set_stage(task.id, TaskStage.CHUNKING)
-        chunk_config_id = self._config_repo.ensure_config(
-            CHUNKING_CONFIG_TYPE, chunking_config_json()
-        )
-        embed_config_id = self._config_repo.ensure_config(
-            embedding.EMBEDDING_CONFIG_TYPE, embedding.embedding_config_json()
-        )
-        index_version = self._ensure_index_version(
-            version.id, chunk_config_id, embed_config_id
-        )
+        index_version = self._ensure_index_version(version.id)
         blocks = self._content_repo.list_document_blocks(version.id)
         chunks = chunk_blocks(blocks)
         self._chunk_repo.replace_index_chunks(index_version.id, chunks)
         self._run_vector_pipeline(task, version)
 
     def _run_vector_pipeline(self, task: Task, version: DocumentVersion) -> None:
-        """向量管线：嵌入批次流水 -> 写入完成边界 -> 验证 -> 原子激活
+        """索引管线：嵌入批次流水 -> 向量写入边界 -> 关键词写入 -> 验证 -> 激活
 
         嵌入以批次为粒度流式写入 staging 集合并推进游标 checkpoint，
-        中断续跑只补尾部批次；验证通过后激活事务切换活动指针并回填
-        文档级指针——失败路径不触碰任何既有活动索引
+        中断续跑只补尾部批次；关键词索引本地重建（幂等、无外部成本）；
+        验证通过后激活事务切换活动指针并回填文档级指针——失败路径
+        不触碰任何既有活动索引
         """
-        chunk_config_id = self._config_repo.ensure_config(
-            CHUNKING_CONFIG_TYPE, chunking_config_json()
-        )
-        embed_config_id = self._config_repo.ensure_config(
-            embedding.EMBEDDING_CONFIG_TYPE, embedding.embedding_config_json()
-        )
-        index_version = self._ensure_index_version(
-            version.id, chunk_config_id, embed_config_id
-        )
+        index_version = self._ensure_index_version(version.id)
         stored_chunks = self._chunk_repo.list_index_chunks(index_version.id)
         children = [
             stored for stored in stored_chunks if stored.chunk.parent_ordinal is not None
@@ -597,6 +597,8 @@ class ImportTaskWorker:
         self._embed_and_write(task, collection, children)
         # 向量写入已随嵌入批次完成：本阶段作为写入完成的边界推进
         self._set_stage(task.id, TaskStage.WRITING_VECTOR_INDEX)
+        self._set_stage(task.id, TaskStage.WRITING_KEYWORD_INDEX)
+        self._write_keyword_index(index_version.id, children)
         self._set_stage(task.id, TaskStage.VALIDATING_INDEX)
         self._validate_index(index_version.id, collection, children)
         # 激活前最后取消点：激活事务不可中断
@@ -650,10 +652,11 @@ class ImportTaskWorker:
         collection: str,
         children: list[StoredChunk],
     ) -> None:
-        """验证 staging 集合与切片事实一致并记录完整性基准
+        """验证 staging 索引与切片事实一致并记录完整性基准
 
-        数量与 ID 集合在向量侧复核；完整性哈希覆盖子切片序号与内容
-        哈希序列（Chroma 不存内容哈希，该基准供重建与健康检查比对）
+        向量侧复核数量与 ID 集合；关键词侧复核命名空间文档数；
+        完整性哈希覆盖子切片序号与内容哈希序列（Chroma 不存内容
+        哈希，该基准供重建与健康检查比对）
         """
         expected_ids = [stored.id for stored in children]
         actual_count = self._vector_index.count_vectors(collection)
@@ -663,25 +666,36 @@ class ImportTaskWorker:
                 f"向量集合与切片事实不一致: 期望 {len(expected_ids)} 条,"
                 f" 实际 {actual_count} 条"
             )
+        namespace = self._fts_namespace_by_id(index_version_id)
+        keyword_count = self._keyword_index.count_documents(namespace)
+        if keyword_count != len(children):
+            raise IndexValidationError(
+                f"关键词索引与切片事实不一致: 期望 {len(children)} 条,"
+                f" 实际 {keyword_count} 条"
+            )
         self._index_repo.record_validation(
             index_version_id,
             chunk_count=len(children),
             integrity_hash=integrity_hash([stored.chunk for stored in children]),
         )
 
-    def _ensure_index_version(
-        self,
-        document_version_id: str,
-        chunking_config_id: str,
-        embedding_profile_id: str,
-    ) -> IndexVersion:
-        """复用或创建该文档版本的 staging 索引版本
+    def _ensure_index_version(self, document_version_id: str) -> IndexVersion:
+        """确保三类配置行就位，复用或创建该文档版本的 staging 索引版本
 
         同一文档版本同时至多一个在途 staging 索引：切片中断续跑复用
-        既有记录（切片按序号幂等重写），避免每次尝试遗留孤儿 staging；
-        任一配置不一致的既有 staging 不复用（留待补偿清理），以新索引
-        表达参数变化
+        既有记录（切片/向量/关键词写入均幂等重放），避免每次尝试遗留
+        孤儿 staging；任一配置不一致的既有 staging 不复用（留待补偿
+        清理），以新索引表达参数变化
         """
+        chunking_config_id = self._config_repo.ensure_config(
+            CHUNKING_CONFIG_TYPE, chunking_config_json()
+        )
+        embedding_profile_id = self._config_repo.ensure_config(
+            embedding.EMBEDDING_CONFIG_TYPE, embedding.embedding_config_json()
+        )
+        keyword_config_id = self._config_repo.ensure_config(
+            keyword.KEYWORD_CONFIG_TYPE, keyword.keyword_config_json()
+        )
         reusable = None
         for index in self._index_repo.list_by_document_version(document_version_id):
             if (
@@ -696,6 +710,7 @@ class ImportTaskWorker:
             document_version_id,
             chunking_config_id=chunking_config_id,
             embedding_profile_id=embedding_profile_id,
+            keyword_config_id=keyword_config_id,
         )
 
     def _collection_name(self, index_version: IndexVersion) -> str:
@@ -704,6 +719,34 @@ class ImportTaskWorker:
         if index_version.vector_collection != name:
             self._index_repo.set_vector_collection(index_version.id, name)
         return name
+
+    def _write_keyword_index(
+        self, index_version_id: str, children: list[StoredChunk]
+    ) -> None:
+        """关键词索引写入：本地分词后按命名空间整体重建（幂等）"""
+        namespace = self._fts_namespace_by_id(index_version_id)
+        token_lists = self._text_tokenizer.tokenize(
+            [stored.chunk.content for stored in children]
+        )
+        documents = [
+            KeywordDocument(chunk_id=stored.id, content=" ".join(tokens))
+            for stored, tokens in zip(children, token_lists)
+        ]
+        self._keyword_index.rebuild_namespace(namespace, documents)
+
+    def _fts_namespace(self, index_version: IndexVersion) -> str:
+        """解析索引版本的 FTS 命名空间并保证已登记（幂等）"""
+        namespace = f"{_FTS_NAMESPACE_PREFIX}{index_version.id}"
+        if index_version.fts_namespace != namespace:
+            self._index_repo.set_fts_namespace(index_version.id, namespace)
+        return namespace
+
+    def _fts_namespace_by_id(self, index_version_id: str) -> str:
+        """按索引版本 ID 解析 FTS 命名空间并保证已登记（幂等）"""
+        index = self._index_repo.get(index_version_id)
+        if index is None:
+            raise EntityNotFoundError(f"索引版本不存在: {index_version_id}")
+        return self._fts_namespace(index)
 
     @staticmethod
     def _embedded_cursor(checkpoint_json: str | None) -> int:

@@ -21,6 +21,7 @@ from .entities import (
     TaskStatus,
 )
 from .ingest import ImportOutcome
+from .keyword import KeywordDocument
 from .parsing import ParsedDocument
 
 
@@ -130,6 +131,7 @@ class IndexVersionRepository(ABC):
         fts_namespace: str | None = None,
         chunking_config_id: str | None = None,
         embedding_profile_id: str | None = None,
+        keyword_config_id: str | None = None,
     ) -> IndexVersion:
         """创建索引版本（staging）；版本不存在抛 EntityNotFoundError"""
 
@@ -137,6 +139,11 @@ class IndexVersionRepository(ABC):
     def set_vector_collection(self, index_id: str, collection_name: str) -> None:
         """登记向量集合名（staging 期写入；集合按索引版本隔离，
         命名由向量适配层约定）。索引不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def set_fts_namespace(self, index_id: str, namespace: str) -> None:
+        """登记 FTS 命名空间（staging 期写入；命名空间按索引版本
+        隔离，命名由关键词适配层约定）。索引不存在抛 EntityNotFoundError"""
 
     @abstractmethod
     def record_validation(
@@ -263,6 +270,40 @@ class VectorIndexGateway(ABC):
     @abstractmethod
     def delete_collection(self, collection_name: str) -> None:
         """删除整个集合（补偿清理用）；集合不存在时无操作"""
+
+
+class KeywordIndexGateway(ABC):
+    """关键词索引网关：FTS5 命名空间的写入与验证（写入侧）
+
+    命名空间按索引版本隔离；文档内容为预分词的空格分隔文本
+    （分词由 TextTokenizer 承担，网关不做分词）。检索查询属
+    检索里程碑能力，不在本 Port 定义
+    """
+
+    @abstractmethod
+    def rebuild_namespace(
+        self, namespace: str, documents: Sequence[KeywordDocument]
+    ) -> int:
+        """以重建方式写入命名空间（先清空该命名空间再插入，幂等）。
+
+        返回写入文档数。命名空间内既有内容无论来自哪次尝试都会被
+        本次输入完全取代"""
+
+    @abstractmethod
+    def count_documents(self, namespace: str) -> int:
+        """返回命名空间内文档数量；命名空间不存在返回 0"""
+
+
+class TextTokenizer(ABC):
+    """文本分词器：中文关键词检索的预分词边界"""
+
+    @abstractmethod
+    def tokenize(self, texts: Sequence[str]) -> list[list[str]]:
+        """把文本序列分词为词元序列
+
+        :param texts: 文本序列
+        :return: 与输入同序的词元列表（已做归一化：小写、去空白）
+        """
 
 
 class ImportRepository(ABC):
