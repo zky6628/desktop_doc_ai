@@ -2,6 +2,8 @@
 """关键词索引测试：jieba 分词、FTS 命名空间重建与迁移落地"""
 import sqlite3
 
+import pytest
+
 from app.domain.keyword import KeywordDocument
 from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.sqlite.connection import connect
@@ -137,5 +139,108 @@ class TestSqliteFtsKeywordIndex:
                 )
             ]
             assert hits == ["c1"]
+        finally:
+            conn.close()
+
+    def test_query_keywords_orders_by_relevance_and_keeps_raw_score(self, tmp_path):
+        """短语查询按相关度降序：score = -bm25 且原始值保留"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            index.rebuild_namespace(
+                "fts-a",
+                [
+                    KeywordDocument(chunk_id="c1", content="苹果 是 水果"),
+                    KeywordDocument(chunk_id="c2", content="苹果 苹果 苹果"),
+                    KeywordDocument(chunk_id="c3", content="香蕉 是 水果"),
+                ],
+            )
+            hits = index.query_keywords("fts-a", ["苹果"], top_k=10)
+
+            assert [hit.chunk_id for hit in hits] == ["c2", "c1"]
+            assert hits[0].score > hits[1].score >= 0
+            for hit in hits:
+                assert hit.score == pytest.approx(-hit.raw_score)
+        finally:
+            conn.close()
+
+    def test_query_keywords_multi_token_phrase_requires_adjacency(self, tmp_path):
+        """多词元查询构成单短语，要求词元在索引内容中相邻"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            index.rebuild_namespace(
+                "fts-a",
+                [
+                    KeywordDocument(chunk_id="c1", content="年假 制度 规定"),
+                    KeywordDocument(chunk_id="c2", content="年假 其他 制度"),
+                ],
+            )
+            hits = index.query_keywords("fts-a", ["年假", "制度"], top_k=10)
+
+            assert [hit.chunk_id for hit in hits] == ["c1"]
+        finally:
+            conn.close()
+
+    def test_query_keywords_empty_tokens_returns_empty(self, tmp_path):
+        """空词元序列不发起查询，直接返回空列表"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            assert index.query_keywords("fts-a", [], top_k=10) == []
+        finally:
+            conn.close()
+
+    def test_query_keywords_punctuation_tokens_dropped(self, tmp_path):
+        """纯标点词元在索引侧无词元对应，过滤后短语仍按词元命中"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            index.rebuild_namespace(
+                "fts-a", [KeywordDocument(chunk_id="c1", content="苹果 香蕉")]
+            )
+
+            hits = index.query_keywords("fts-a", ["苹果", "，", "香蕉"], top_k=10)
+
+            assert [hit.chunk_id for hit in hits] == ["c1"]
+        finally:
+            conn.close()
+
+    def test_query_keywords_quote_tokens_keep_syntax_valid(self, tmp_path):
+        """含引号词元转义后语法合法（无命中但不报错）"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            assert index.query_keywords("fts-a", ['a"b'], top_k=10) == []
+        finally:
+            conn.close()
+
+    def test_query_keywords_namespaces_are_isolated(self, tmp_path):
+        """查询按命名空间隔离：跨命名空间内容互不可见"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            index.rebuild_namespace(
+                "fts-a", [KeywordDocument(chunk_id="c1", content="苹果 是 水果")]
+            )
+            index.rebuild_namespace(
+                "fts-b", [KeywordDocument(chunk_id="c2", content="香蕉 是 水果")]
+            )
+
+            assert [hit.chunk_id for hit in index.query_keywords("fts-a", ["苹果"], top_k=10)] == ["c1"]
+            assert index.query_keywords("fts-b", ["苹果"], top_k=10) == []
+        finally:
+            conn.close()
+
+    def test_query_keywords_respects_top_k(self, tmp_path):
+        """查询返回数量不超过 top_k"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            index.rebuild_namespace(
+                "fts-a",
+                [
+                    KeywordDocument(chunk_id="c1", content="苹果 有 营养"),
+                    KeywordDocument(chunk_id="c2", content="苹果 很 常见"),
+                    KeywordDocument(chunk_id="c3", content="其他 内容"),
+                ],
+            )
+
+            hits = index.query_keywords("fts-a", ["苹果"], top_k=1)
+
+            assert len(hits) == 1
         finally:
             conn.close()

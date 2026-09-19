@@ -71,3 +71,55 @@ def test_delete_missing_collection_is_noop(adapter):
     """删除不存在的集合不抛异常"""
     adapter.delete_collection(_collection())
 
+
+def test_created_collections_use_cosine_space():
+    """写入创建的集合固定为余弦空间（查询距离即余弦距离的基准）"""
+    client = chromadb.EphemeralClient()
+    adapter = ChromaVectorIndexAdapter(client)
+    name = _collection()
+    adapter.upsert_vectors(name, ["c1"], [[1.0, 0.0]])
+
+    metadata = client.get_collection(name).metadata or {}
+    assert metadata.get("hnsw:space") == "cosine"
+
+
+def test_query_vectors_orders_by_relevance_with_normalized_score(adapter):
+    """查询按余弦相似度排序：score = 1 - 原始距离且原始距离保留"""
+    name = _collection()
+    adapter.upsert_vectors(
+        name,
+        ["c-near", "c-far"],
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+    )
+
+    hits = adapter.query_vectors(name, [1.0, 0.0, 0.0], top_k=2)
+
+    assert hits[0].chunk_id == "c-near"
+    assert hits[0].raw_score == pytest.approx(0.0, abs=1e-6)
+    assert hits[0].score == pytest.approx(1.0, abs=1e-6)
+    assert hits[1].chunk_id == "c-far"
+    assert hits[1].score == pytest.approx(1.0 - hits[1].raw_score)
+
+
+def test_query_vectors_respects_top_k(adapter):
+    """查询返回数量不超过 top_k 且相关度降序"""
+    name = _collection()
+    adapter.upsert_vectors(
+        name,
+        ["c1", "c2", "c3"],
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    )
+
+    hits = adapter.query_vectors(name, [1.0, 0.0, 0.0], top_k=2)
+
+    assert len(hits) == 2
+    assert hits[0].chunk_id == "c1"
+
+
+def test_query_vectors_missing_collection_returns_empty_without_creating(adapter):
+    """查询不存在的集合返回空列表且不产生创建副作用"""
+    name = _collection()
+
+    assert adapter.query_vectors(name, [1.0, 0.0], top_k=5) == []
+    assert name not in adapter.list_collections()
+

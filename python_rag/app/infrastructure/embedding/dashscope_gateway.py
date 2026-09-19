@@ -21,6 +21,7 @@ from app.domain.errors import (
     EmbeddingTransientError,
 )
 from app.domain.ports import EmbeddingGateway as EmbeddingGatewayPort
+from app.domain.ports import QueryEmbeddingGateway as QueryEmbeddingGatewayPort
 
 # 业务错误码到错误类别的映射（供应方文档口径）；
 # 前缀类码（限流族）在解析函数中按后缀细分，未列出的码按协议违规
@@ -77,15 +78,16 @@ def _is_transient_status(status_code: int) -> bool:
     return status_code in (408, 429) or 500 <= status_code < 600
 
 
-class DashScopeEmbeddingGateway(EmbeddingGatewayPort):
-    """DashScope 文本向量化网关
+class DashScopeEmbeddingGateway(EmbeddingGatewayPort, QueryEmbeddingGatewayPort):
+    """DashScope 文本向量化网关（构建侧与查询侧）
 
     :param api_key: API Key（构造器注入，绝不写日志与消息）
     :param invoker: 供应方调用函数（缺省绑定 SDK，测试注入替身）
     :param model: 向量模型名
     :param dimensions: 向量维度（响应校验基准）
     :param batch_size: 单请求文本数上限
-    :param text_type: 文本侧别（文档构建固定 document）
+    :param text_type: 构建侧文本侧别（文档构建固定 document）；查询
+        侧由 embed_query 固定传入 query，与实例配置无关
     """
 
     def __init__(
@@ -107,17 +109,31 @@ class DashScopeEmbeddingGateway(EmbeddingGatewayPort):
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
         """把文本序列向量化（方法契约见领域 Port 定义）"""
+        return self._embed_with_type(texts, self._text_type)
+
+    def embed_query(self, question: str) -> list[float]:
+        """把单个检索问题以查询侧参数向量化（方法契约见领域 Port 定义）"""
+        return self._embed_with_type([question], embedding.EMBEDDING_QUERY_TEXT_TYPE)[
+            0
+        ]
+
+    def _embed_with_type(
+        self, texts: Sequence[str], text_type: str
+    ) -> list[list[float]]:
+        """按指定侧别逐批向量化并保持输入顺序"""
         vectors: list[list[float]] = []
         for start in range(0, len(texts), self._batch_size):
             batch = list(texts[start : start + self._batch_size])
-            vectors.extend(self._embed_batch(batch))
+            vectors.extend(self._embed_batch(batch, text_type))
         return vectors
 
-    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+    def _embed_batch(
+        self, batch: list[str], text_type: str
+    ) -> list[list[float]]:
         """单批向量化：传输层异常统一归瞬态，业务层按响应内容分类"""
         try:
             response = self._invoke(
-                self._model, batch, self._dimensions, self._text_type, self._api_key
+                self._model, batch, self._dimensions, text_type, self._api_key
             )
         except Exception as exc:
             # 调用边界兜底：SDK 传输层失败以异常表达，统一归瞬态

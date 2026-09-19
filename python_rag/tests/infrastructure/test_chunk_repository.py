@@ -168,6 +168,41 @@ def test_missing_index_version_rejected(env):
         )
 
 
+def test_get_chunk_anchors_returns_facts_by_ids(env):
+    """按主键批量读取锚点事实：归属索引版本与序号"""
+    index_id, _ = env.new_index_version(block_count=1)
+    env.chunks.replace_index_chunks(index_id, [_chunk(0), _chunk(1, parent=0)])
+    rows = env.conn.execute(
+        "SELECT id FROM chunks WHERE index_version_id = ? ORDER BY ordinal",
+        (index_id,),
+    ).fetchall()
+
+    anchors = env.chunks.get_chunk_anchors([rows[0][0], rows[1][0]])
+
+    by_id = {anchor.chunk_id: anchor for anchor in anchors}
+    assert by_id[rows[0][0]].index_version_id == index_id
+    assert by_id[rows[0][0]].ordinal == 0
+    assert by_id[rows[1][0]].ordinal == 1
+
+
+def test_get_chunk_anchors_missing_ids_produce_no_rows(env):
+    """不存在的主键不产生结果行（命中回查的丢弃判定依据）"""
+    index_id, _ = env.new_index_version(block_count=1)
+    env.chunks.replace_index_chunks(index_id, [_chunk(0)])
+    existing = env.conn.execute(
+        "SELECT id FROM chunks WHERE index_version_id = ?", (index_id,)
+    ).fetchone()[0]
+
+    anchors = env.chunks.get_chunk_anchors([existing, "missing-chunk-id"])
+
+    assert [anchor.chunk_id for anchor in anchors] == [existing]
+
+
+def test_get_chunk_anchors_empty_input_returns_empty(env):
+    """空输入直接返回空列表"""
+    assert env.chunks.get_chunk_anchors([]) == []
+
+
 def test_config_reused_for_same_content_and_new_version_for_change(env):
     """同内容配置幂等复用；内容变化创建类型内递增的新版本行"""
     config_json = chunking_config_json()

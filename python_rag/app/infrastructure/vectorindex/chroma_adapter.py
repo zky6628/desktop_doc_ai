@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Chroma 向量索引适配器：按索引版本隔离的集合写入与验证
+"""Chroma 向量索引适配器：按索引版本隔离的集合写入、验证与查询
 
 集合按索引版本隔离，命名合同由调用方传入（工作台侧为
 "wb-idx-{索引版本 ID}"——归属信息由名字唯一承载，不再写 metadata）。
-写入按记录 ID 幂等 upsert，集合按需创建；读取侧对不存在的集合
-返回零值而非创建，避免验证与清理路径产生空集合副作用。检索查询
-属检索里程碑能力，本适配器只承载写入与验证。
+集合固定使用余弦空间：查询返回的余弦距离经 score = 1 - 距离 直接
+对应余弦相似度语义，与向量是否归一化无关。写入按记录 ID 幂等
+upsert，集合按需创建；读取侧对不存在的集合返回零值而非创建，避免
+验证与清理路径产生空集合副作用。
 """
 from collections.abc import Sequence
 from typing import Any
 
 from app.domain.ports import VectorIndexGateway as VectorIndexGatewayPort
+from app.domain.retrieval import IndexHit
+
+# 集合度量空间：余弦距离直接对应嵌入检索的相似度语义
+_COLLECTION_METADATA = {"hnsw:space": "cosine"}
 
 
 class ChromaVectorIndexAdapter(VectorIndexGatewayPort):
@@ -30,8 +35,33 @@ class ChromaVectorIndexAdapter(VectorIndexGatewayPort):
         vectors: Sequence[Sequence[float]],
     ) -> None:
         """按记录 ID 幂等写入/更新向量（方法契约见领域 Port 定义）"""
-        collection = self._client.get_or_create_collection(name=collection_name)
+        collection = self._client.get_or_create_collection(
+            name=collection_name, metadata=_COLLECTION_METADATA
+        )
         collection.upsert(ids=list(ids), embeddings=[list(v) for v in vectors])
+
+    def query_vectors(
+        self, collection_name: str, query_vector: Sequence[float], top_k: int
+    ) -> list[IndexHit]:
+        """按查询向量取最近邻命中（方法契约见领域 Port 定义）"""
+        collection = self._try_get_collection(collection_name)
+        if collection is None:
+            return []
+        result = collection.query(
+            query_embeddings=[[float(value) for value in query_vector]],
+            n_results=top_k,
+        )
+        ids = result["ids"][0]
+        distances = result["distances"][0]
+        # 余弦空间下 score = 1 - 距离 恰为余弦相似度，原始距离保留
+        return [
+            IndexHit(
+                chunk_id=chunk_id,
+                raw_score=float(distance),
+                score=1.0 - float(distance),
+            )
+            for chunk_id, distance in zip(ids, distances)
+        ]
 
     def count_vectors(self, collection_name: str) -> int:
         """返回集合内向量数量；集合不存在返回 0"""

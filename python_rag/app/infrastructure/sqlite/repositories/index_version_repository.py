@@ -144,6 +144,26 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
         ).fetchall()
         return [self._to_entity(row) for row in rows]
 
+    def list_active_by_knowledge_base(self, kb_id: str) -> list:
+        """按指针链解析知识库可检索索引（方法契约见领域 Port 定义）"""
+        rows = self._conn.execute(
+            "SELECT iv.id, iv.document_version_id, iv.index_no, iv.status,"
+            " iv.parser_config_id, iv.chunking_config_id, iv.embedding_profile_id,"
+            " iv.vector_collection, iv.fts_namespace, iv.chunk_count,"
+            " iv.integrity_hash, iv.created_at, iv.activated_at, iv.retired_at"
+            " FROM index_versions AS iv"
+            " JOIN document_versions AS dv ON dv.id = iv.document_version_id"
+            " JOIN documents AS d ON d.id = dv.document_id"
+            " WHERE d.knowledge_base_id = ?"
+            "   AND d.deleted_at IS NULL"
+            "   AND d.active_document_version_id = dv.id"
+            "   AND dv.active_index_version_id = iv.id"
+            "   AND iv.status = ?"
+            " ORDER BY iv.created_at, iv.id",
+            (kb_id, IndexVersionStatus.ACTIVE.value),
+        ).fetchall()
+        return [self._to_entity(row) for row in rows]
+
     def list_all(self) -> list:
         """列出全部索引版本（方法契约见领域 Port 定义）"""
         rows = self._conn.execute(

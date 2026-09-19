@@ -21,8 +21,10 @@ EMBEDDING_DIMENSIONS = 1024
 # 单次请求文本数上限（供应方批量接口约束）
 EMBEDDING_BATCH_SIZE = 10
 
-# 文本侧别：文档构建固定 document，查询侧语义随检索里程碑另配
+# 文本侧别：文档构建固定 document；查询侧检索固定 query，两侧口径
+# 不混用（查询侧由查询嵌入端口实现固定，与实例配置无关）
 EMBEDDING_TEXT_TYPE = "document"
+EMBEDDING_QUERY_TEXT_TYPE = "query"
 
 
 def embedding_config_json() -> str:

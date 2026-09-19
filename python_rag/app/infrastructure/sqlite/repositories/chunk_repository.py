@@ -13,6 +13,7 @@ from app.domain.chunking import CHUNK_BLOCK_RELATION_EXACT, Chunk, StoredChunk
 from app.domain.errors import EntityNotFoundError
 from app.domain.ids import uuid7
 from app.domain.ports import ChunkRepository as ChunkRepositoryPort
+from app.domain.retrieval import ChunkAnchor
 
 from ..transactions import run_in_transaction
 
@@ -181,6 +182,21 @@ class SQLiteChunkRepository(ChunkRepositoryPort):
         ).fetchall():
             links.setdefault(chunk_id, []).append(block_id)
         return [self._to_stored_chunk(row, id_to_ordinal, links) for row in rows]
+
+    def get_chunk_anchors(self, chunk_ids: Sequence[str]) -> list[ChunkAnchor]:
+        """按主键批量读取切片锚点事实（方法契约见领域 Port 定义）"""
+        if not chunk_ids:
+            return []
+        placeholders = ",".join("?" for _ in chunk_ids)
+        rows = self._conn.execute(
+            f"SELECT id, index_version_id, ordinal FROM chunks"
+            f" WHERE id IN ({placeholders})",
+            tuple(chunk_ids),
+        ).fetchall()
+        return [
+            ChunkAnchor(chunk_id=row[0], index_version_id=row[1], ordinal=row[2])
+            for row in rows
+        ]
 
     @staticmethod
     def _to_stored_chunk(

@@ -183,3 +183,69 @@ def test_full_lifecycle_integration(repos):
     assert version_loaded.active_index_version_id == index.id
     assert index_loaded.status.value == "active"
     assert doc_loaded.status.value == "ready"
+
+
+def test_list_active_by_knowledge_base_resolves_pointer_chain(repos):
+    """指针链解析：活动文档版本指向的活动索引版本可被检索定位"""
+    repositories, _ = repos
+    kb = repositories["kb"].create(name="kb")
+    doc = repositories["documents"].create(kb.id, "a.pdf", "a" * 64)
+    version = repositories["versions"].create(doc.id, "p", "a" * 64)
+    index = repositories["indexes"].create(version.id)
+    repositories["indexes"].activate(index.id)
+    repositories["documents"].set_active_version(doc.id, version.id)
+
+    resolved = repositories["indexes"].list_active_by_knowledge_base(kb.id)
+
+    assert [item.id for item in resolved] == [index.id]
+    assert resolved[0].document_version_id == version.id
+
+
+def test_list_active_by_knowledge_base_excludes_non_chain_rows(repos):
+    """指针链之外的行不产出：软删文档、staging 索引、文档指针未回填"""
+    repositories, _ = repos
+    kb = repositories["kb"].create(name="kb")
+
+    # 软删文档：索引 active 且指针回填，但文档已软删除
+    deleted_doc = repositories["documents"].create(kb.id, "d.pdf", "d" * 64)
+    deleted_version = repositories["versions"].create(deleted_doc.id, "p", "d" * 64)
+    deleted_index = repositories["indexes"].create(deleted_version.id)
+    repositories["indexes"].activate(deleted_index.id)
+    repositories["documents"].set_active_version(deleted_doc.id, deleted_version.id)
+    repositories["documents"].soft_delete(deleted_doc.id)
+
+    # 文档版本指针已回填，但文档未指向该版本（历史版本）
+    stale_doc = repositories["documents"].create(kb.id, "o.pdf", "o" * 64)
+    stale_version = repositories["versions"].create(stale_doc.id, "p", "o" * 64)
+    stale_index = repositories["indexes"].create(stale_version.id)
+    repositories["indexes"].activate(stale_index.id)
+
+    # staging 索引未激活
+    staging_doc = repositories["documents"].create(kb.id, "t.pdf", "t" * 64)
+    staging_version = repositories["versions"].create(staging_doc.id, "p", "t" * 64)
+    repositories["indexes"].create(staging_version.id)
+
+    # 可检索的正常文档
+    good_doc = repositories["documents"].create(kb.id, "g.pdf", "g" * 64)
+    good_version = repositories["versions"].create(good_doc.id, "p", "g" * 64)
+    good_index = repositories["indexes"].create(good_version.id)
+    repositories["indexes"].activate(good_index.id)
+    repositories["documents"].set_active_version(good_doc.id, good_version.id)
+
+    resolved = repositories["indexes"].list_active_by_knowledge_base(kb.id)
+
+    assert [item.id for item in resolved] == [good_index.id]
+
+
+def test_list_active_by_knowledge_base_scopes_to_kb(repos):
+    """解析结果限定在目标知识库内，其他知识库文档不产出"""
+    repositories, _ = repos
+    kb_a = repositories["kb"].create(name="kb-a")
+    kb_b = repositories["kb"].create(name="kb-b")
+    doc = repositories["documents"].create(kb_a.id, "a.pdf", "a" * 64)
+    version = repositories["versions"].create(doc.id, "p", "a" * 64)
+    index = repositories["indexes"].create(version.id)
+    repositories["indexes"].activate(index.id)
+    repositories["documents"].set_active_version(doc.id, version.id)
+
+    assert repositories["indexes"].list_active_by_knowledge_base(kb_b.id) == []

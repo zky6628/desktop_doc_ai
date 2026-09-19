@@ -23,6 +23,7 @@ from .entities import (
 from .ingest import ImportOutcome
 from .keyword import KeywordDocument
 from .parsing import ParsedDocument
+from .retrieval import ChunkAnchor, IndexHit
 
 
 class KnowledgeBaseRepository(ABC):
@@ -169,6 +170,15 @@ class IndexVersionRepository(ABC):
         """列出文档版本的全部索引版本（按索引号升序）"""
 
     @abstractmethod
+    def list_active_by_knowledge_base(self, kb_id: str) -> list[IndexVersion]:
+        """按指针链解析知识库当前可检索的活动索引版本
+
+        链路：documents.active_document_version_id →
+        document_versions.active_index_version_id → 状态为 active 的
+        index_versions；软删文档与指针未回填的版本不产出。知识库无
+        文档或无可检索索引返回空列表（存在性与删除状态由调用方校验）"""
+
+    @abstractmethod
     def delete(self, index_id: str) -> int:
         """删除残留索引版本行（补偿清理用）
 
@@ -239,6 +249,27 @@ class EmbeddingGateway(ABC):
         """
 
 
+class QueryEmbeddingGateway(ABC):
+    """查询侧向量化网关：检索问题的查询侧嵌入边界
+
+    与构建侧共用同一模型与维度；查询侧文本参数由本端口实现固定，
+    两侧口径不混用（侧别由方法保证而非实例配置，消除误用场景）。
+    错误族与构建侧一致，瞬态失败由调用方决定重试策略
+    """
+
+    @abstractmethod
+    def embed_query(self, question: str) -> list[float]:
+        """把单个检索问题向量化
+
+        :param question: 问题文本（调用方保证非空白）
+        :return: 查询向量（维度与构建侧一致）
+        :raises EmbeddingTransientError: 网络或供应方瞬态故障
+        :raises EmbeddingAuthError: 密钥无效
+        :raises EmbeddingQuotaError: 配额不足
+        :raises EmbeddingProtocolViolationError: 响应不符合协议
+        """
+
+
 class ChunkRepository(ABC):
     """切片仓储：索引版本内切片与其定位关系的持久化"""
 
@@ -260,6 +291,12 @@ class ChunkRepository(ABC):
         EntityNotFoundError"""
 
     @abstractmethod
+    def get_chunk_anchors(self, chunk_ids: Sequence[str]) -> list[ChunkAnchor]:
+        """按主键批量读取切片锚点事实（归属索引版本与序号）
+
+        检索命中回查业务事实用；不存在的主键不产生结果行"""
+
+    @abstractmethod
     def count_index_chunks(self, index_version_id: str) -> int:
         """返回该索引版本的切片行数（健康检查与清理的目标判定用）；
         索引版本不存在返回 0"""
@@ -273,10 +310,10 @@ class ChunkRepository(ABC):
 
 
 class VectorIndexGateway(ABC):
-    """向量索引网关：Chroma 等向量库的供应方边界（写入与验证侧）
+    """向量索引网关：Chroma 等向量库的供应方边界（写入、验证与查询）
 
     集合按索引版本隔离，集合名由调用方按适配层命名约定传入；
-    检索查询属检索里程碑能力，不在本 Port 定义
+    查询按统一语义返回越高越相关的分数并保留供应方原始值
     """
 
     @abstractmethod
@@ -287,6 +324,19 @@ class VectorIndexGateway(ABC):
         vectors: Sequence[Sequence[float]],
     ) -> None:
         """按记录 ID 幂等写入/更新向量（集合不存在时创建）"""
+
+    @abstractmethod
+    def query_vectors(
+        self, collection_name: str, query_vector: Sequence[float], top_k: int
+    ) -> list[IndexHit]:
+        """按查询向量取最近邻命中
+
+        :param collection_name: 集合名（集合不存在返回空列表且不产生
+            创建副作用）
+        :param query_vector: 查询向量（维度与构建侧一致）
+        :param top_k: 返回命中数上限
+        :return: 按相关度降序的命中（score 越高越相关，原始距离随
+            命中保留）"""
 
     @abstractmethod
     def count_vectors(self, collection_name: str) -> int:
@@ -309,11 +359,11 @@ class VectorIndexGateway(ABC):
 
 
 class KeywordIndexGateway(ABC):
-    """关键词索引网关：FTS5 命名空间的写入与验证（写入侧）
+    """关键词索引网关：FTS5 命名空间的写入、验证与查询
 
-    命名空间按索引版本隔离；文档内容为预分词的空格分隔文本
-    （分词由 TextTokenizer 承担，网关不做分词）。检索查询属
-    检索里程碑能力，不在本 Port 定义
+    命名空间按索引版本隔离；写入内容与查询词元均为分词器产出的
+    预分词序列（分词由 TextTokenizer 承担，网关不做分词）。查询按
+    统一语义返回越高越相关的分数并保留原始 bm25 值
     """
 
     @abstractmethod
@@ -324,6 +374,18 @@ class KeywordIndexGateway(ABC):
 
         返回写入文档数。命名空间内既有内容无论来自哪次尝试都会被
         本次输入完全取代"""
+
+    @abstractmethod
+    def query_keywords(
+        self, namespace: str, tokens: Sequence[str], top_k: int
+    ) -> list[IndexHit]:
+        """按预分词词元序列取短语匹配命中
+
+        :param namespace: 命名空间（不存在返回空列表）
+        :param tokens: 分词器产出的词元序列（构成单短语精确匹配）
+        :param top_k: 返回命中数上限
+        :return: 按相关度降序的命中（score 越高越相关，原始 bm25 值
+            随命中保留）"""
 
     @abstractmethod
     def count_documents(self, namespace: str) -> int:
