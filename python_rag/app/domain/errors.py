@@ -42,6 +42,10 @@ class ConfirmationConflictError(RepositoryError):
     """云端解析确认与任务状态冲突：仅等待确认的任务可被确认"""
 
 
+class QueryStateConflictError(RepositoryError):
+    """查询状态迁移不被状态机允许（终态再迁移或非法迁移）"""
+
+
 class FileTooLargeError(RepositoryError):
     """上传文件超过单文件大小上限，暂存已中止且无残留"""
 
@@ -213,6 +217,45 @@ class RerankProtocolViolationError(RerankError):
     """响应违反协议：未知业务错误码、数量/下标/分数校验失败，不可自动重试"""
 
     error_code = "RERANK_PROTOCOL_VIOLATION"
+
+
+class GenerationError(RepositoryError):
+    """生成网关失败的基类：错误码供查询失败终态与 HTTP 错误映射使用
+
+    错误消息只描述失败类别与脱敏摘要，不得携带密钥、问题或回答正文
+    """
+
+    error_code = "GENERATION_FAILED"
+
+
+class GenerationTransientError(GenerationError):
+    """瞬态传输/服务错误：网络中断、超时、5xx，可重试（HTTP NETWORK_ERROR）"""
+
+    error_code = "NETWORK_ERROR"
+
+
+class GenerationRateLimitedError(GenerationError):
+    """生成限流：429/限流族业务码（HTTP MODEL_RATE_LIMITED，客户端稍后重试）"""
+
+    error_code = "MODEL_RATE_LIMITED"
+
+
+class GenerationAuthError(GenerationError):
+    """认证失败：API Key 无效或被拒绝（服务端配置问题，内部错误）"""
+
+    error_code = "GENERATION_AUTH"
+
+
+class GenerationQuotaError(GenerationError):
+    """配额不足：欠费或额度耗尽（服务端配置问题，内部错误）"""
+
+    error_code = "GENERATION_QUOTA"
+
+
+class GenerationProtocolViolationError(GenerationError):
+    """响应违反协议：未知业务错误码、流式增量结构不符（内部错误）"""
+
+    error_code = "GENERATION_PROTOCOL_VIOLATION"
 
 
 class IndexValidationError(RepositoryError):

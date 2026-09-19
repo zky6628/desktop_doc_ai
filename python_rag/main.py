@@ -177,23 +177,32 @@ from langchain_core.embeddings import Embeddings
 from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
 # 工作台 v1 运行时：SQLite 事实源 + 任务化导入（/api/v1）
 import chromadb
-from app.api.v1 import ApiV1Dependencies, create_api_router
+from app.api.v1 import ApiV1Dependencies, QueryDependencies, create_api_router
 from app.domain.ids import uuid7
 from app.infrastructure.embedding import DashScopeEmbeddingGateway
+from app.infrastructure.generation import DashScopeGenerationGateway
 from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.ingest import ImportOrchestrator
 from app.infrastructure.mineru import MinerUClient
+from app.infrastructure.query import QueryOrchestrator
+from app.infrastructure.rerank import DashScopeRerankGateway
+from app.infrastructure.retrieval import ContextResolver, RetrievalService
 from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.migrations import apply_migrations
 from app.infrastructure.sqlite.repositories.import_repository import SQLiteImportRepository
 from app.infrastructure.sqlite.repositories import (
     SQLiteChunkRepository,
+    SQLiteCitationRepository,
     SQLiteConfigRepository,
     SQLiteContentRepository,
+    SQLiteConversationRepository,
     SQLiteDocumentRepository,
     SQLiteDocumentVersionRepository,
     SQLiteExternalTaskRepository,
     SQLiteIndexVersionRepository,
+    SQLiteKnowledgeBaseRepository,
+    SQLiteQueryEventStore,
+    SQLiteQueryRunRepository,
 )
 from app.infrastructure.sqlite.repositories.task_repository import SQLiteTaskRepository
 from app.infrastructure.storage.upload_staging import UploadStagingStore
@@ -709,11 +718,71 @@ if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "
         if _import_worker is not None:
             _import_worker.stop()
 
+# 查询链路装配：实时问答编排（检索→重排→组装→流式生成→引用快照）。
+# 启动恢复把进程重启残留的未完成查询置为失败（与任务恢复语义对齐）
+_query_run_repo = SQLiteQueryRunRepository(_workbench_conn)
+_query_event_store = SQLiteQueryEventStore(_workbench_conn)
+_query_conversation_repo = SQLiteConversationRepository(_workbench_conn)
+_query_citation_repo = SQLiteCitationRepository(_workbench_conn)
+_query_config_repo = SQLiteConfigRepository(_workbench_conn)
+_query_kb_repo = SQLiteKnowledgeBaseRepository(_workbench_conn)
+_query_dashscope_key = os.getenv("DASHSCOPE_API_KEY") or ""
+_query_deps = QueryDependencies(
+    orchestrator=QueryOrchestrator(
+        run_repo=_query_run_repo,
+        event_store=_query_event_store,
+        conversation_repo=_query_conversation_repo,
+        config_repo=_query_config_repo,
+        citation_repo=_query_citation_repo,
+        retrieval_service=RetrievalService(
+            index_repo=SQLiteIndexVersionRepository(_workbench_conn),
+            chunk_repo=SQLiteChunkRepository(_workbench_conn),
+            query_embedder=(
+                DashScopeEmbeddingGateway(api_key=_query_dashscope_key)
+                if _query_dashscope_key
+                else None
+            ),
+            vector_index=ChromaVectorIndexAdapter(
+                chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR)
+            ),
+            keyword_index=SQLiteFtsKeywordIndex(_workbench_conn),
+            tokenizer=JiebaTokenizer(),
+        ),
+        resolver=ContextResolver(
+            index_repo=SQLiteIndexVersionRepository(_workbench_conn),
+            chunk_repo=SQLiteChunkRepository(_workbench_conn),
+            document_repo=SQLiteDocumentRepository(_workbench_conn),
+            version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
+        ),
+        rerank_gateway=(
+            DashScopeRerankGateway(api_key=_query_dashscope_key)
+            if _query_dashscope_key
+            else None
+        ),
+        generation_gateway=(
+            DashScopeGenerationGateway(api_key=_query_dashscope_key)
+            if _query_dashscope_key
+            else None
+        ),
+    ),
+    run_repo=_query_run_repo,
+    kb_repo=_query_kb_repo,
+    conversation_repo=_query_conversation_repo,
+    citation_repo=_query_citation_repo,
+)
+try:
+    _interrupted = _query_deps.orchestrator.fail_interrupted()
+    if _interrupted:
+        print(f"[workbench] 恢复：{_interrupted} 个中断查询已置为失败")
+except Exception as _recover_error:  # noqa: BLE001 - 恢复失败不阻断启动
+    print(f"[workbench] 查询恢复失败: {type(_recover_error).__name__}")
+
 app.include_router(
     create_api_router(
         ApiV1Dependencies(
             orchestrator=_workbench_orchestrator,
             task_repo=_workbench_task_repo,
+            query=_query_deps,
         )
     )
 )

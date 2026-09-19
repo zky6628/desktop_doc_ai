@@ -111,6 +111,59 @@ class IndexVersion:
     retired_at: str | None
 
 
+class QueryRunState(StrEnum):
+    """查询生命周期状态：queued 起步，completed/failed/cancelled 为终态；
+
+    cancel_requested 为取消中过渡态（执行方在检查点收尾）
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    CANCEL_REQUESTED = "cancel_requested"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class QueryRun:
+    """查询运行：评测与状态的事实源"""
+
+    id: str
+    knowledge_base_id: str
+    question: str
+    state: QueryRunState
+    conversation_id: str | None
+    user_message_id: str | None
+    assistant_message_id: str | None
+    refused: bool
+    rerank_degraded: bool
+    started_at: str | None
+    first_token_at: str | None
+    completed_at: str | None
+    server_ttft_ms: int | None
+    total_ms: int | None
+    error_code: str | None
+    error_message: str | None
+    idempotency_key: str | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class QueryEvent:
+    """查询事件：SSE 事实（token 批次过期后不再回放）"""
+
+    query_run_id: str
+    event_seq: int
+    event_type: str
+    payload_json: str | None
+    token_text: str | None
+    token_seq_start: int | None
+    token_seq_end: int | None
+    created_at: str
+    expires_at: str | None
+
+
 class TaskStatus(StrEnum):
     """任务生命周期状态：queued 起步，succeeded/failed/cancelled 为终态"""
 

@@ -31,12 +31,12 @@ from .schema_helpers import (
 def _fresh_db(tmp_path):
     """创建应用过全部迁移的临时库（测试辅助）"""
     db_path, applied = fresh_db(tmp_path, name="schema_business.db")
-    assert applied == 6
+    assert applied == 8
     return db_path
 
 
 def test_migrations_apply_in_order(tmp_path):
-    """全新 SQLite 文件可按 0001->0005 顺序创建全部表与索引"""
+    """全新 SQLite 文件可按 0001->0007 顺序创建全部表与索引"""
     db_path = _fresh_db(tmp_path)
     conn = sqlite3.connect(db_path)
     try:
@@ -48,6 +48,8 @@ def test_migrations_apply_in_order(tmp_path):
             "documents", "document_versions", "index_versions",
             "content_blocks", "tables", "chunks", "chunk_block_links",
             "tasks", "task_events", "external_tasks",
+            "conversations", "messages", "citations",
+            "query_runs", "query_events",
             "schema_migrations",
         } <= tables
 
@@ -68,7 +70,7 @@ def test_migrations_apply_in_order(tmp_path):
         versions = [r[0] for r in conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         )]
-        assert versions == [1, 2, 3, 4, 5, 6]
+        assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
     finally:
         conn.close()
 
@@ -90,7 +92,7 @@ def test_upgrade_from_legacy_schema(tmp_path):
     finally:
         conn.close()
 
-    assert apply_migrations(db_path, _DEFAULT_MIGRATIONS_DIR) == 6
+    assert apply_migrations(db_path, _DEFAULT_MIGRATIONS_DIR) == 8
 
 
 def test_kb_active_name_unique_and_soft_delete_reuse(tmp_path):

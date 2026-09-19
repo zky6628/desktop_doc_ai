@@ -6,15 +6,18 @@ Port 由领域层定义、基础设施层实现（SQLite Adapter）。
 未在此定义的读写能力（如内容表的批量摄取）随对应里程碑补充。
 """
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 from .chunking import Chunk, StoredBlock, StoredChunk
+from .citation import CitationRecord
 from .entities import (
     Document,
     DocumentVersion,
     ExternalTask,
     IndexVersion,
     KnowledgeBase,
+    QueryEvent,
+    QueryRun,
     Task,
     TaskEvent,
     TaskStage,
@@ -294,6 +297,156 @@ class RerankGateway(ABC):
         """
 
 
+class GenerationGateway(ABC):
+    """生成网关：流式回答的供应方边界
+
+    输出为增量文本片段的迭代器（按生成顺序）；瞬态失败以领域错误
+    表达，由查询链路决定重试与终态策略，网关内部不重试
+    """
+
+    @abstractmethod
+    def stream_answer(
+        self, messages: Sequence[dict[str, str]]
+    ) -> "Iterator[str]":
+        """按消息序列流式生成回答
+
+        :param messages: 供应方消息列表（system/user 角色）
+        :return: 增量文本片段迭代器（拼接后即回答全文）
+        :raises GenerationRateLimitedError: 生成限流
+        :raises GenerationTransientError: 网络或供应方瞬态故障
+        :raises GenerationAuthError: 密钥无效
+        :raises GenerationQuotaError: 配额不足
+        :raises GenerationProtocolViolationError: 响应不符合协议
+        """
+
+
+class QueryRunRepository(ABC):
+    """查询运行仓储：查询状态机与评测事实的持久化
+
+    状态机：queued → running → completed/failed/cancelled；取消请求
+    将 running/queued 置为 cancel_requested，由执行方在检查点收尾
+    """
+
+    @abstractmethod
+    def create(
+        self,
+        *,
+        kb_id: str,
+        question: str,
+        config_ids: dict[str, str],
+        idempotency_key: str | None = None,
+    ) -> QueryRun:
+        """创建查询运行（queued）
+
+        幂等键命中时直接返回既有查询（不重复创建）；知识库不存在抛
+        EntityNotFoundError"""
+
+    @abstractmethod
+    def get(self, run_id: str) -> QueryRun | None:
+        """按 ID 读取；不存在返回 None"""
+
+    @abstractmethod
+    def mark_running(self, run_id: str) -> None:
+        """queued → running（回填 started_at）；迁移非法抛
+        QueryStateConflictError，不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def mark_first_token(self, run_id: str) -> None:
+        """回填首 token 时间与服务端 TTFT（幂等：重复调用不覆盖）"""
+
+    @abstractmethod
+    def request_cancel(self, run_id: str) -> QueryRun:
+        """请求取消：queued/running → cancel_requested（幂等：已处于
+        取消中或终态时返回当前快照不迁移）；不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def is_cancel_requested(self, run_id: str) -> bool:
+        """查询是否处于取消中（执行方检查点轮询）"""
+
+    @abstractmethod
+    def finalize(
+        self,
+        run_id: str,
+        *,
+        state: str,
+        refused: bool = False,
+        degraded: bool = False,
+        assistant_message_id: str | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> QueryRun:
+        """收尾终态（cancel_requested/running → completed/failed/cancelled）：
+        回填完成时间、总耗时、拒答/降级标志、消息关联与错误信息；
+        不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def attach_message_ids(
+        self,
+        run_id: str,
+        *,
+        conversation_id: str,
+        user_message_id: str,
+        assistant_message_id: str,
+    ) -> None:
+        """回填查询与会话/消息的关联（评测记录独立于会话删除）；
+        查询不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def fail_interrupted(self) -> int:
+        """把重启残留的 queued/running/cancel_requested 查询统一置为
+        failed（进程重启中断）；返回处理数量（启动恢复调用，幂等）"""
+
+
+class QueryEventStore(ABC):
+    """查询事件仓储：SSE 事件的持久化与断点重放
+
+    event_seq 查询内单调递增（1 起）；token 批次合并写库并携带过期
+    时间（终态后 30 分钟），过期清理归补偿清理链
+    """
+
+    @abstractmethod
+    def append(
+        self,
+        run_id: str,
+        *,
+        event_type: str,
+        payload: dict | None = None,
+        token_text: str | None = None,
+        token_seq_start: int | None = None,
+        token_seq_end: int | None = None,
+        expires_at: str | None = None,
+    ) -> int:
+        """追加一条事件并返回其 event_seq（查询内单调递增）；
+        查询不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def read_after(self, run_id: str, after_seq: int = 0) -> list[QueryEvent]:
+        """按序号升序读取 event_seq > after_seq 的事件（断点重放）；
+        token 批次已过期的事件不返回（聚合正文经查询读取获取）"""
+
+    @abstractmethod
+    def expire_tokens(self, run_id: str, expiry_horizon_seconds: int) -> None:
+        """把该查询 token 批次的过期时间设为终态后保留窗（30 分钟）；
+        非终态调用为空操作由执行方保证"""
+
+
+class ConversationRepository(ABC):
+    """会话仓储：查询链路的会话与消息事实（v1 最小面）"""
+
+    @abstractmethod
+    def ensure_conversation(self, kb_id: str, conversation_id: str | None) -> str:
+        """确保会话存在并返回其主键：给定 ID 时校验存在（不存在抛
+        EntityNotFoundError）；未给定时创建新会话"""
+
+    @abstractmethod
+    def add_message(self, conversation_id: str, role: str, content: str) -> str:
+        """追加消息并返回主键（role 为 user/assistant）"""
+
+    @abstractmethod
+    def get_message_content(self, message_id: str) -> str | None:
+        """按主键读取消息正文；不存在返回 None（最终答案聚合用）"""
+
+
 class ChunkRepository(ABC):
     """切片仓储：索引版本内切片与其定位关系的持久化"""
 
@@ -433,6 +586,27 @@ class TextTokenizer(ABC):
         :param texts: 文本序列
         :return: 与输入同序的词元列表（已做归一化：小写、去空白）
         """
+
+
+class CitationRepository(ABC):
+    """引用快照仓储：引用不可变事实的持久化与历史读取
+
+    快照行在写入时定格文件名/版本/页码/章节/引文与四类分数；切片
+    清理只置空切片指针（存储层 ON DELETE SET NULL），快照事实保留
+    """
+
+    @abstractmethod
+    def insert_citations(self, records: Sequence[CitationRecord]) -> int:
+        """单事务批量写入引用快照
+
+        以 (助手消息, 引用序号) 为唯一键：重放冲突行忽略不覆盖
+        （幂等）。返回实际写入行数。消息不存在时抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def list_by_message(self, assistant_message_id: str) -> list[CitationRecord]:
+        """按助手消息读取引用快照（引用序号升序）
+
+        历史会话展示与评测导出用；消息不存在返回空列表"""
 
 
 class ImportRepository(ABC):

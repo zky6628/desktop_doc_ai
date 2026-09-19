@@ -27,6 +27,7 @@ from app.infrastructure.ingest import (
 )
 
 from .envelope import error_envelope, new_request_id, serialize_task, success_envelope
+from .queries import QueryDependencies, create_query_router
 
 # 单批次文件数上限复用上传策略常量，保证口径一致
 _MAX_BATCH_FILES = file_policy.MAX_BATCH_FILES
@@ -44,10 +45,14 @@ def _chunk_reader(fp, chunk_size: int):
 
 @dataclass(frozen=True)
 class ApiV1Dependencies:
-    """v1 端点依赖：由应用装配（或测试）构造"""
+    """v1 端点依赖：由应用装配（或测试）构造
+
+    query 为查询端点依赖（未装配时查询路由不注册）
+    """
 
     orchestrator: ImportOrchestrator
     task_repo: TaskRepository
+    query: QueryDependencies | None = None
 
 
 class CloudConfirmationRequest(BaseModel):
@@ -59,11 +64,13 @@ class CloudConfirmationRequest(BaseModel):
 def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
     """装配 v1 路由
 
-    :param deps: 端点依赖（编排器与任务仓储）
+    :param deps: 端点依赖（编排器与任务仓储；查询依赖可选）
     :return: 挂载到应用上的 APIRouter（前缀 /api/v1）
     """
 
     router = APIRouter(prefix="/api/v1")
+    if deps.query is not None:
+        router.include_router(create_query_router(deps.query))
 
     @router.post("/knowledge-bases/{kb_id}/documents")
     def upload_documents(
@@ -199,5 +206,7 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
 __all__ = [
     "ApiV1Dependencies",
     "CloudConfirmationRequest",
+    "QueryDependencies",
     "create_api_router",
+    "create_query_router",
 ]
