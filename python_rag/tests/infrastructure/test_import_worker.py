@@ -14,11 +14,13 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import chromadb
 import pytest
 from docx import Document as DocxDocument
 
+from app.domain.chunking import chunk_blocks
 from app.domain.entities import TaskStage, TaskStatus
-from app.domain.errors import CloudTransportError
+from app.domain.errors import CloudTransportError, EmbeddingTransientError
 from app.domain.parser_routing import decide_parser_route
 from app.infrastructure.mineru.archive import extract_archive
 from app.infrastructure.mineru.dto import (
@@ -43,10 +45,29 @@ from app.infrastructure.sqlite.repositories.import_repository import (
     SQLiteImportRepository,
 )
 from app.infrastructure.storage.upload_staging import UploadStagingStore
+from app.infrastructure.vectorindex import ChromaVectorIndexAdapter
 from app.infrastructure.worker import ImportTaskWorker
 
 from .schema_helpers import fresh_db
 from .test_parsing_pdf import _build_pdf
+
+# 构造参数哨兵：区分"显式传 None"与"使用夹具默认替身"
+_UNSET = object()
+
+
+class _FakeEmbeddingGateway:
+    """确定性向量化替身：记录调用文本，可选首调挂钩（取消场景用）"""
+
+    def __init__(self, on_first_call=None) -> None:
+        self.embedded_texts: list[str] = []
+        self._on_first_call = on_first_call
+
+    def embed_texts(self, texts):
+        if self._on_first_call is not None:
+            hook, self._on_first_call = self._on_first_call, None
+            hook()
+        self.embedded_texts.extend(texts)
+        return [[float(len(text) % 9 + 1)] * 4 for text in texts]
 
 
 @pytest.fixture()
@@ -67,7 +88,7 @@ def env(tmp_path):
         "imports": SQLiteImportRepository(conn),
     }
 
-    def build(mineru=None) -> ImportTaskWorker:
+    def build(mineru=None, embedding_gateway=_UNSET, vector_index=None):
         return ImportTaskWorker(
             task_repo=repos["tasks"],
             document_repo=repos["documents"],
@@ -77,14 +98,25 @@ def env(tmp_path):
             index_repo=repos["indexes"],
             chunk_repo=repos["chunks"],
             config_repo=repos["configs"],
+            embedding_gateway=(
+                fake_gateway if embedding_gateway is _UNSET else embedding_gateway
+            ),
+            vector_index=(
+                vector_adapter if vector_index is None else vector_index
+            ),
             mineru_client=mineru,
             work_dir=str(tmp_path / "cloud_results"),
             worker_id="worker-test",
         )
 
+    chroma_client = chromadb.EphemeralClient()
+    vector_adapter = ChromaVectorIndexAdapter(chroma_client)
+    fake_gateway = _FakeEmbeddingGateway()
+
     yield SimpleNamespace(
         conn=conn, repos=repos, staging=str(tmp_path / "staging"),
-        kb_id=kb.id, build=build,
+        kb_id=kb.id, build=build, vector_index=vector_adapter,
+        gateway=fake_gateway,
     )
     conn.close()
 
@@ -225,9 +257,9 @@ def test_local_txt_processed_to_succeeded(env):
     assert version.parsed_content_sha256 == expected
     assert version.parser_provider == "local"
 
-    # 文档状态归索引激活里程碑接线，本次保持导入时的取值
+    # 索引激活后文档级指针回填并置 ready
     document = env.repos["documents"].get(task.document_id)
-    assert document.status.value == "queued"
+    assert document.status.value == "ready"
 
 
 def test_local_docx_table_evidence_persisted(env):
@@ -302,51 +334,46 @@ def test_scan_pdf_rejection_cancels_task(env):
     assert confirmed.state.value == "cancelled"
 
 
-def test_local_task_builds_staging_index_with_chunks(env):
-    """任务成功后建立 staging 索引版本并落库切片与定位关系"""
-    task_id = _import_file(env, "笔记.txt", "第一段内容\n\n第二段内容".encode())
+def test_local_task_activates_index_and_document(env):
+    """任务成功后索引原子激活：向量集合、验证基准与文档指针全部落位"""
+    long_text = "字" * 500
+    task_id = _import_file(
+        env, "笔记.txt", (long_text + "\n\n" + long_text).encode()
+    )
     worker = env.build()
 
     assert worker.process_next() is True
 
     task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "succeeded"
     version_id = task.document_version_id
     indexes = env.repos["indexes"].list_by_document_version(version_id)
     assert len(indexes) == 1
-    assert indexes[0].status.value == "staging"
-    # 切片配置已接线为流水线配置行
-    config = env.conn.execute(
-        "SELECT config_type, config_json FROM pipeline_configs WHERE id = ?",
-        (indexes[0].chunking_config_id,),
-    ).fetchone()
-    assert config[0] == "chunking"
-    assert '"chunking_config_version":"1"' in config[1]
+    assert indexes[0].status.value == "active"
+    assert indexes[0].vector_collection == f"wb-idx-{indexes[0].id}"
+    # 切片与嵌入配置均登记为流水线配置行
+    assert indexes[0].chunking_config_id is not None
+    assert indexes[0].embedding_profile_id is not None
 
-    chunk_rows = env.conn.execute(
-        "SELECT ordinal, content FROM chunks WHERE index_version_id = ?"
-        " ORDER BY ordinal",
-        (indexes[0].id,),
-    ).fetchall()
-    assert chunk_rows, "切片应已落库"
-    # 定位关系与解析块衔接
-    links = env.conn.execute(
-        "SELECT COUNT(*) FROM chunk_block_links"
-        " WHERE chunk_id IN (SELECT id FROM chunks WHERE index_version_id = ?)",
+    # 向量集合与子切片一一对应，验证基准已记录
+    child_count = env.conn.execute(
+        "SELECT COUNT(*) FROM chunks"
+        " WHERE index_version_id = ? AND parent_chunk_id IS NOT NULL",
         (indexes[0].id,),
     ).fetchone()[0]
-    assert links >= len(chunk_rows)
+    assert indexes[0].chunk_count == child_count
+    assert indexes[0].integrity_hash
+    assert env.vector_index.count_vectors(indexes[0].vector_collection) == child_count
+
+    # 激活回填文档级指针并置 ready
+    document = env.repos["documents"].get(task.document_id)
+    assert document.status.value == "ready"
+    assert document.active_document_version_id == version_id
 
 
-def test_chunking_resume_reuses_staging_index(env):
-    """切片中断续跑：复用既有 staging 索引，切片无重复"""
-    task_id = _import_file(env, "笔记.txt", "切片内容\n\n更多内容".encode())
-    worker = env.build()
-
-    # 构造"切片阶段崩溃"现场：任务停留在 chunking 阶段且租约失效，
-    # 前序尝试已确保配置并创建 staging 索引
-    claimed = env.repos["tasks"].claim_next("worker-crashed", task_type="import")
-    assert claimed.id == task_id
-    config_id = env.repos["configs"].ensure_config(
+def _ensure_configs(env) -> tuple[str, str]:
+    """确保切片与嵌入配置行存在（构造中断现场用），返回（切片, 嵌入）配置 ID"""
+    chunk_config_id = env.repos["configs"].ensure_config(
         "chunking",
         json.dumps(
             {
@@ -360,30 +387,78 @@ def test_chunking_resume_reuses_staging_index(env):
             separators=(",", ":"),
         ),
     )
-    index_version = env.repos["indexes"].create(
-        claimed.document_version_id, chunking_config_id=config_id
+    embed_config_id = env.repos["configs"].ensure_config(
+        "embedding",
+        json.dumps(
+            {
+                "embedding_config_version": "1",
+                "model": "text-embedding-v4",
+                "dimensions": 1024,
+                "batch_size": 10,
+                "text_type": "document",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
     )
+    return chunk_config_id, embed_config_id
+
+
+def _backdate_lease(env, task_id: str, stage: str) -> None:
+    """把任务置入指定阶段并使其租约失效（模拟 Worker 崩溃现场）"""
     expires_at = (
         datetime.now(timezone.utc) - timedelta(seconds=31)
     ).isoformat(timespec="seconds")
     env.conn.execute(
-        "UPDATE tasks SET stage = 'chunking', lease_expires_at = ? WHERE id = ?",
-        (expires_at, task_id),
+        "UPDATE tasks SET stage = ?, lease_expires_at = ? WHERE id = ?",
+        (stage, expires_at, task_id),
     )
+
+
+def _write_parse_facts(env, version_id: str) -> None:
+    """把暂存文件的解析事实落库（向量/切片中断必然发生在解析完成之后）"""
+    version = env.repos["versions"].get(version_id)
+    parsed = TxtMarkdownParser(markdown_mode=False).parse(version.source_path, version_id)
+    env.repos["content"].replace_document_content(version_id, parsed)
+
+
+def _recovered(env) -> None:
     assert env.repos["tasks"].recover_interrupted_tasks()[
         "stale_running_requeued"
     ] == 1
+
+
+def test_chunking_resume_reuses_staging_index(env):
+    """切片中断续跑：复用既有 staging 索引，切片无重复"""
+    task_id = _import_file(env, "笔记.txt", "切片内容\n\n更多内容".encode())
+    worker = env.build()
+
+    # 构造"切片阶段崩溃"现场：任务停留在 chunking 阶段且租约失效，
+    # 前序尝试已确保配置并创建 staging 索引
+    claimed = env.repos["tasks"].claim_next("worker-crashed", task_type="import")
+    assert claimed.id == task_id
+    chunk_config_id, embed_config_id = _ensure_configs(env)
+    index_version = env.repos["indexes"].create(
+        claimed.document_version_id,
+        chunking_config_id=chunk_config_id,
+        embedding_profile_id=embed_config_id,
+    )
+    _write_parse_facts(env, claimed.document_version_id)
+    _backdate_lease(env, task_id, "chunking")
+    _recovered(env)
 
     assert worker.process_next() is True
 
     task = env.repos["tasks"].get(task_id)
     assert task.state.value == "succeeded"
-    # staging 索引被复用而非新建
+    # staging 索引被复用而非新建，最终完成激活
     indexes = env.repos["indexes"].list_by_document_version(
         claimed.document_version_id
     )
     assert len(indexes) == 1
     assert indexes[0].id == index_version.id
+    assert indexes[0].status.value == "active"
     ordinals = [
         row[0]
         for row in env.conn.execute(
@@ -392,6 +467,168 @@ def test_chunking_resume_reuses_staging_index(env):
         ).fetchall()
     ]
     assert ordinals == list(range(len(ordinals)))
+
+
+def test_embedding_resume_continues_from_cursor(env):
+    """嵌入中断续跑：从游标批次继续，已完成批不重复向量化"""
+    long_text = "字" * 500
+    task_id = _import_file(env, "笔记.txt", (long_text + "\n\n" + long_text).encode())
+    worker = env.build()
+
+    # 构造"第一批嵌入完成"现场：切片已落库、首批子切片向量已写入、
+    # 游标推进到首批末尾序号、租约失效
+    claimed = env.repos["tasks"].claim_next("worker-crashed", task_type="import")
+    assert claimed.id == task_id
+    chunk_config_id, embed_config_id = _ensure_configs(env)
+    index_version = env.repos["indexes"].create(
+        claimed.document_version_id,
+        chunking_config_id=chunk_config_id,
+        embedding_profile_id=embed_config_id,
+    )
+    _write_parse_facts(env, claimed.document_version_id)
+    env.repos["chunks"].replace_index_chunks(
+        index_version.id,
+        chunk_blocks(
+            env.repos["content"].list_document_blocks(claimed.document_version_id)
+        ),
+    )
+    stored_chunks = env.repos["chunks"].list_index_chunks(index_version.id)
+    children = [s for s in stored_chunks if s.chunk.parent_ordinal is not None]
+    assert len(children) >= 2
+    first_batch = children[:10]
+    env.vector_index.upsert_vectors(
+        f"wb-idx-{index_version.id}",
+        [stored.id for stored in first_batch],
+        [[1.0] * 4] * len(first_batch),
+    )
+    fresh_gateway = _FakeEmbeddingGateway()
+    worker = env.build(embedding_gateway=fresh_gateway)
+    _backdate_lease(env, task_id, "embedding")
+    env.conn.execute(
+        "UPDATE tasks SET checkpoint_json = ? WHERE id = ?",
+        (json.dumps({"embedded_until": first_batch[-1].chunk.ordinal}), task_id),
+    )
+    _recovered(env)
+
+    assert worker.process_next() is True
+
+    task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "succeeded"
+    # 仅游标之后的子切片被向量化
+    expected_tail = [s.chunk.content for s in children[10:]]
+    assert fresh_gateway.embedded_texts == expected_tail
+    # 全量子切片最终齐备，任务完成激活
+    assert env.vector_index.count_vectors(f"wb-idx-{index_version.id}") == len(children)
+
+
+def test_transient_embedding_error_retries_then_succeeds(env):
+    """瞬态嵌入失败走自动重试；到期提升后续跑到激活成功"""
+    task_id = _import_file(env, "笔记.txt", "可重试内容".encode())
+
+    class _FlakyGateway(_FakeEmbeddingGateway):
+        """首批抛瞬态错误，其后正常"""
+
+        def embed_texts(self, texts):
+            if self.embedded_texts or not texts:
+                return super().embed_texts(texts)
+            self.embedded_texts.append("__failed__")
+            raise EmbeddingTransientError("供应商限流")
+
+    worker = env.build(embedding_gateway=_FlakyGateway())
+
+    assert worker.process_next() is True
+
+    task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "retry_waiting"
+    assert task.error_code == "EMBEDDING_TRANSIENT"
+
+    past = (
+        datetime.now(timezone.utc) - timedelta(seconds=1)
+    ).isoformat(timespec="seconds")
+    env.conn.execute(
+        "UPDATE tasks SET next_retry_at = ? WHERE id = ?", (past, task_id)
+    )
+    assert env.repos["tasks"].promote_due_retries() == 1
+
+    assert worker.process_next() is True
+
+    task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "succeeded"
+    indexes = env.repos["indexes"].list_by_document_version(task.document_version_id)
+    assert indexes[0].status.value == "active"
+
+
+def test_missing_gateway_fails_with_auth_code(env):
+    """未配置向量化网关：嵌入阶段按认证失败处理，索引保持 staging"""
+    task_id = _import_file(env, "笔记.txt", "内容".encode())
+    worker = env.build(embedding_gateway=None)
+
+    assert worker.process_next() is True
+
+    task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "failed"
+    assert task.error_code == "EMBEDDING_AUTH"
+    indexes = env.repos["indexes"].list_by_document_version(task.document_version_id)
+    assert indexes[0].status.value == "staging"
+    document = env.repos["documents"].get(task.document_id)
+    assert document.status.value == "queued"
+
+
+def test_validation_mismatch_fails_without_activation(env):
+    """向量集合残留异物导致校验失败：任务失败且不激活任何索引"""
+    task_id = _import_file(env, "笔记.txt", "校验内容".encode())
+    worker = env.build()
+
+    # 构造"集合存在残留向量"现场（此前中断尝试的遗留）
+    claimed = env.repos["tasks"].claim_next("worker-crashed", task_type="import")
+    assert claimed.id == task_id
+    chunk_config_id, embed_config_id = _ensure_configs(env)
+    index_version = env.repos["indexes"].create(
+        claimed.document_version_id,
+        chunking_config_id=chunk_config_id,
+        embedding_profile_id=embed_config_id,
+    )
+    _write_parse_facts(env, claimed.document_version_id)
+    env.repos["chunks"].replace_index_chunks(
+        index_version.id,
+        chunk_blocks(
+            env.repos["content"].list_document_blocks(claimed.document_version_id)
+        ),
+    )
+    env.vector_index.upsert_vectors(
+        f"wb-idx-{index_version.id}", ["alien-residual"], [[9.9] * 4]
+    )
+    _backdate_lease(env, task_id, "embedding")
+    _recovered(env)
+
+    assert worker.process_next() is True
+
+    task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "failed"
+    assert task.error_code == "INDEX_VALIDATION_FAILED"
+    # 失败不产生任何激活，文档指针保持为空
+    indexes = env.repos["indexes"].list_by_document_version(claimed.document_version_id)
+    assert all(index.status.value == "staging" for index in indexes)
+    document = env.repos["documents"].get(claimed.document_id)
+    assert document.active_document_version_id is None
+
+
+def test_cancel_during_embedding_leaves_staging(env):
+    """嵌入批次间收到取消：任务取消收尾，不产生激活"""
+    task_id = _import_file(env, "笔记.txt", "取消场景内容".encode())
+    gateway = _FakeEmbeddingGateway(
+        on_first_call=lambda: env.repos["tasks"].request_cancel(task_id)
+    )
+    worker = env.build(embedding_gateway=gateway)
+
+    assert worker.process_next() is True
+
+    task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "cancelled"
+    indexes = env.repos["indexes"].list_by_document_version(task.document_version_id)
+    assert all(index.status.value != "active" for index in indexes)
+    document = env.repos["documents"].get(task.document_id)
+    assert document.status.value != "ready"
 
 
 # ===================== 云端路线 =====================

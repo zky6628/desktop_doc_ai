@@ -8,7 +8,7 @@ Port 由领域层定义、基础设施层实现（SQLite Adapter）。
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
-from .chunking import Chunk, StoredBlock
+from .chunking import Chunk, StoredBlock, StoredChunk
 from .entities import (
     Document,
     DocumentVersion,
@@ -72,7 +72,9 @@ class DocumentRepository(ABC):
 
     @abstractmethod
     def set_active_version(self, doc_id: str, version_id: str) -> None:
-        """回填活动版本指针并刷新 updated_at；目标不存在时抛 EntityNotFoundError"""
+        """回填活动版本指针并刷新 updated_at；非删除态文档同时置为
+        ready（首个活动版本产生即文档就绪；多版本时最新激活胜出）。
+        目标不存在抛 EntityNotFoundError"""
 
 
 class DocumentVersionRepository(ABC):
@@ -127,8 +129,21 @@ class IndexVersionRepository(ABC):
         vector_collection: str | None = None,
         fts_namespace: str | None = None,
         chunking_config_id: str | None = None,
+        embedding_profile_id: str | None = None,
     ) -> IndexVersion:
         """创建索引版本（staging）；版本不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def set_vector_collection(self, index_id: str, collection_name: str) -> None:
+        """登记向量集合名（staging 期写入；集合按索引版本隔离，
+        命名由向量适配层约定）。索引不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def record_validation(
+        self, index_id: str, *, chunk_count: int, integrity_hash: str
+    ) -> None:
+        """记录完整性验证结果（切片数与检索单元完整性哈希），供
+        重建与健康检查比对。索引不存在抛 EntityNotFoundError"""
 
     @abstractmethod
     def get(self, index_id: str) -> IndexVersion | None:
@@ -212,6 +227,42 @@ class ChunkRepository(ABC):
         新主键；定位关系按切片整体替换；序号超出本次输入范围的残留
         行一并清除。切片主键不存在抛 EntityNotFoundError（含子切片
         引用的父序号缺失）。返回写入切片数。"""
+
+    @abstractmethod
+    def list_index_chunks(self, index_version_id: str) -> list[StoredChunk]:
+        """按序号升序读取该索引版本的全部切片（含定位关系）
+
+        向量化与验证阶段以此读取切片事实；索引版本不存在抛
+        EntityNotFoundError"""
+
+
+class VectorIndexGateway(ABC):
+    """向量索引网关：Chroma 等向量库的供应方边界（写入与验证侧）
+
+    集合按索引版本隔离，集合名由调用方按适配层命名约定传入；
+    检索查询属检索里程碑能力，不在本 Port 定义
+    """
+
+    @abstractmethod
+    def upsert_vectors(
+        self,
+        collection_name: str,
+        ids: Sequence[str],
+        vectors: Sequence[Sequence[float]],
+    ) -> None:
+        """按记录 ID 幂等写入/更新向量（集合不存在时创建）"""
+
+    @abstractmethod
+    def count_vectors(self, collection_name: str) -> int:
+        """返回集合内向量数量；集合不存在返回 0"""
+
+    @abstractmethod
+    def list_vector_ids(self, collection_name: str) -> list[str]:
+        """返回集合内全部记录 ID；集合不存在返回空列表"""
+
+    @abstractmethod
+    def delete_collection(self, collection_name: str) -> None:
+        """删除整个集合（补偿清理用）；集合不存在时无操作"""
 
 
 class ImportRepository(ABC):

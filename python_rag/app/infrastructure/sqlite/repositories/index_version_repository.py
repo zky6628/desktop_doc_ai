@@ -30,6 +30,7 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
         vector_collection: str | None = None,
         fts_namespace: str | None = None,
         chunking_config_id: str | None = None,
+        embedding_profile_id: str | None = None,
     ) -> IndexVersion:
         def _create(conn) -> IndexVersion:
             now = utc_now_iso()
@@ -49,11 +50,12 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
                 " (id, document_version_id, index_no, status, parser_config_id,"
                 "  chunking_config_id, embedding_profile_id, vector_collection, fts_namespace,"
                 "  chunk_count, integrity_hash, created_at, activated_at, retired_at)"
-                " VALUES (?, ?, ?, ?, NULL, ?, NULL, ?, ?, NULL, NULL, ?, NULL, NULL)",
+                " VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL)",
                 (
                     index_id, document_version_id, next_no,
                     IndexVersionStatus.STAGING.value,
-                    chunking_config_id, vector_collection, fts_namespace, now,
+                    chunking_config_id, embedding_profile_id,
+                    vector_collection, fts_namespace, now,
                 ),
             )
             return IndexVersion(
@@ -63,7 +65,7 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
                 status=IndexVersionStatus.STAGING,
                 parser_config_id=None,
                 chunking_config_id=chunking_config_id,
-                embedding_profile_id=None,
+                embedding_profile_id=embedding_profile_id,
                 vector_collection=vector_collection,
                 fts_namespace=fts_namespace,
                 chunk_count=None,
@@ -76,6 +78,42 @@ class SQLiteIndexVersionRepository(IndexVersionRepositoryPort):
         return run_in_transaction(
             self._conn, _create, f"创建索引版本 {document_version_id}"
         )
+
+    def set_vector_collection(self, index_id: str, collection_name: str) -> None:
+        """登记向量集合名（方法契约见领域 Port 定义）"""
+
+        def _set(conn) -> None:
+            self._require_index(conn, index_id)
+            conn.execute(
+                "UPDATE index_versions SET vector_collection = ? WHERE id = ?",
+                (collection_name, index_id),
+            )
+
+        run_in_transaction(self._conn, _set, f"登记向量集合 {index_id}")
+
+    def record_validation(
+        self, index_id: str, *, chunk_count: int, integrity_hash: str
+    ) -> None:
+        """记录完整性验证结果（方法契约见领域 Port 定义）"""
+
+        def _record(conn) -> None:
+            self._require_index(conn, index_id)
+            conn.execute(
+                "UPDATE index_versions SET chunk_count = ?, integrity_hash = ?"
+                " WHERE id = ?",
+                (chunk_count, integrity_hash, index_id),
+            )
+
+        run_in_transaction(self._conn, _record, f"记录索引验证结果 {index_id}")
+
+    @staticmethod
+    def _require_index(conn, index_id: str) -> None:
+        """校验索引版本存在；缺失抛领域错误"""
+        exists = conn.execute(
+            "SELECT 1 FROM index_versions WHERE id = ?", (index_id,)
+        ).fetchone()
+        if exists is None:
+            raise EntityNotFoundError(f"索引版本不存在: {index_id}")
 
     def get(self, index_id: str) -> IndexVersion | None:
         row = self._get_row(self._conn, index_id)

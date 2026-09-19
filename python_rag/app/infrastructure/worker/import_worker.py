@@ -21,11 +21,13 @@ import os
 import shutil
 import threading
 
-from app.domain import parser_routing
+from app.domain import embedding, parser_routing
 from app.domain.chunking import (
     CHUNKING_CONFIG_TYPE,
+    StoredChunk,
     chunk_blocks,
     chunking_config_json,
+    integrity_hash,
 )
 from app.domain.entities import (
     DocumentVersion,
@@ -42,6 +44,10 @@ from app.domain.errors import (
     CloudProtocolViolationError,
     CloudTimeoutError,
     CloudTransportError,
+    EmbeddingAuthError,
+    EmbeddingError,
+    EmbeddingTransientError,
+    IndexValidationError,
     ParsingError,
     RepositoryError,
     TaskLeaseLostError,
@@ -54,10 +60,12 @@ from app.domain.ports import (
     ContentRepository,
     DocumentRepository,
     DocumentVersionRepository,
+    EmbeddingGateway,
     ExternalTaskRepository,
     IndexVersionRepository,
     PipelineConfigRepository,
     TaskRepository,
+    VectorIndexGateway,
 )
 from app.domain.task_state import HEARTBEAT_INTERVAL_SECONDS
 from app.infrastructure.mineru import (
@@ -83,15 +91,27 @@ logger = logging.getLogger(__name__)
 _IDLE_SECONDS = 1.0
 
 # 各阶段的标准进度取值：阶段推进时写入，供任务中心展示
+# （嵌入阶段的进度随批次推进单独计算，不使用静态值）
 _STAGE_PROGRESS: dict[TaskStage, float] = {
     TaskStage.PARSING_LOCAL: 0.2,
-    TaskStage.SUBMITTING_CLOUD: 0.4,
-    TaskStage.POLLING_CLOUD: 0.6,
-    TaskStage.DOWNLOADING_CLOUD_RESULT: 0.75,
-    TaskStage.NORMALIZING: 0.9,
-    TaskStage.CHUNKING: 1.0,
+    TaskStage.SUBMITTING_CLOUD: 0.35,
+    TaskStage.POLLING_CLOUD: 0.5,
+    TaskStage.DOWNLOADING_CLOUD_RESULT: 0.6,
+    TaskStage.NORMALIZING: 0.7,
+    TaskStage.CHUNKING: 0.8,
+    TaskStage.WRITING_VECTOR_INDEX: 0.95,
+    TaskStage.VALIDATING_INDEX: 0.97,
+    TaskStage.ACTIVATING_VERSION: 0.99,
     TaskStage.COMPLETED: 1.0,
 }
+
+# 嵌入批次进度区间：在切片完成与向量写入完成之间线性推进
+_EMBED_PROGRESS_BASE = 0.85
+_EMBED_PROGRESS_SPAN = 0.05
+
+# 向量集合命名前缀：集合按索引版本隔离，名字编码归属
+# （补偿清理以名字解析索引版本，不写 metadata）
+_COLLECTION_PREFIX = "wb-idx-"
 
 # 本地解析器注册表：键为受控暂存扩展名（上传白名单保证取值受控）。
 # 解析器无状态，可安全复用实例
@@ -148,9 +168,12 @@ class ImportTaskWorker:
     :param version_repo: 文档版本仓储
     :param content_repo: 内容仓储（解析事实落库与读取）
     :param external_repo: 外部任务仓储（批次事实唯一事实源）
-    :param index_repo: 索引版本仓储（staging 索引复用与创建）
-    :param chunk_repo: 切片仓储（切片与定位关系写入）
-    :param config_repo: 流水线配置仓储（切片配置版本行）
+    :param index_repo: 索引版本仓储（staging 索引复用、验证结果与激活）
+    :param chunk_repo: 切片仓储（切片与定位关系写入与读取）
+    :param config_repo: 流水线配置仓储（切片/嵌入配置版本行）
+    :param embedding_gateway: 文本向量化网关；未配置时嵌入阶段按
+        认证失败处理（解析与切片路线不受影响）
+    :param vector_index: 向量索引网关（staging 集合写入与验证）
     :param mineru_client: 云端解析客户端；未配置时云端任务在提交时
         按认证失败处理（本地路线不受影响）
     :param work_dir: 云端产物受控工作目录（结果下载与解压）
@@ -168,6 +191,8 @@ class ImportTaskWorker:
         index_repo: IndexVersionRepository,
         chunk_repo: ChunkRepository,
         config_repo: PipelineConfigRepository,
+        embedding_gateway: EmbeddingGateway | None,
+        vector_index: VectorIndexGateway,
         mineru_client: MinerUClient | None,
         work_dir: str,
         worker_id: str,
@@ -180,6 +205,8 @@ class ImportTaskWorker:
         self._index_repo = index_repo
         self._chunk_repo = chunk_repo
         self._config_repo = config_repo
+        self._embedding_gateway = embedding_gateway
+        self._vector_index = vector_index
         self._mineru = mineru_client
         self._work_dir = work_dir
         self._worker_id = worker_id
@@ -281,10 +308,16 @@ class ImportTaskWorker:
             self._fail(task.id, exc.error_code, str(exc))
         except UnsupportedFormatError as exc:
             self._fail(task.id, "UNSUPPORTED_FORMAT", str(exc))
-        except (CloudTimeoutError, CloudTransportError) as exc:
-            # 瞬态传输与轮询超时：按任务引擎的退避节奏自动重试
+        except (CloudTimeoutError, CloudTransportError, EmbeddingTransientError) as exc:
+            # 瞬态传输与轮询/嵌入失败：按任务引擎的退避节奏自动重试
             self._retry(task.id, exc.error_code, str(exc))
         except CloudParsingError as exc:
+            self._fail(task.id, exc.error_code, str(exc))
+        except EmbeddingError as exc:
+            # 认证/配额/协议类嵌入失败：不可自动重试
+            self._fail(task.id, exc.error_code, str(exc))
+        except IndexValidationError as exc:
+            # 确定性索引校验失败：不可自动重试，staging 留待补偿清理
             self._fail(task.id, exc.error_code, str(exc))
         except TaskLeaseLostError:
             logger.warning("租约丢失，终止任务处理 %s", task.id)
@@ -315,6 +348,14 @@ class ImportTaskWorker:
         elif stage is TaskStage.CHUNKING:
             # 切片中断续跑：解析事实已落库，直接重入切片（幂等）
             self._run_chunking(task, self._require_version(task))
+        elif stage in (
+            TaskStage.EMBEDDING,
+            TaskStage.WRITING_VECTOR_INDEX,
+            TaskStage.VALIDATING_INDEX,
+            TaskStage.ACTIVATING_VERSION,
+        ):
+            # 向量管线各中断点续跑：批次游标与幂等写入保证只补尾部
+            self._run_vector_pipeline(task, self._require_version(task))
         else:
             raise RuntimeError(f"导入任务阶段不在可执行范围: {stage.value}")
 
@@ -511,43 +552,186 @@ class ImportTaskWorker:
         """切片阶段：确保配置 -> 复用或创建 staging 索引版本 -> 切片落库
 
         切片输入读取已落库的解析事实（与内存解析模型解耦），中断
-        续跑无需重新解析；写入按序号幂等 upsert，重试不产生重复
+        续跑无需重新解析；写入按序号幂等 upsert，重试不产生重复。
+        切片与嵌入配置在索引创建时一并登记，保证索引版本可追溯
+        全部构建参数
         """
         self._set_stage(task.id, TaskStage.CHUNKING)
-        config_id = self._config_repo.ensure_config(
+        chunk_config_id = self._config_repo.ensure_config(
             CHUNKING_CONFIG_TYPE, chunking_config_json()
         )
-        index_version = self._ensure_index_version(version.id, config_id)
+        embed_config_id = self._config_repo.ensure_config(
+            embedding.EMBEDDING_CONFIG_TYPE, embedding.embedding_config_json()
+        )
+        index_version = self._ensure_index_version(
+            version.id, chunk_config_id, embed_config_id
+        )
         blocks = self._content_repo.list_document_blocks(version.id)
         chunks = chunk_blocks(blocks)
         self._chunk_repo.replace_index_chunks(index_version.id, chunks)
+        self._run_vector_pipeline(task, version)
+
+    def _run_vector_pipeline(self, task: Task, version: DocumentVersion) -> None:
+        """向量管线：嵌入批次流水 -> 写入完成边界 -> 验证 -> 原子激活
+
+        嵌入以批次为粒度流式写入 staging 集合并推进游标 checkpoint，
+        中断续跑只补尾部批次；验证通过后激活事务切换活动指针并回填
+        文档级指针——失败路径不触碰任何既有活动索引
+        """
+        chunk_config_id = self._config_repo.ensure_config(
+            CHUNKING_CONFIG_TYPE, chunking_config_json()
+        )
+        embed_config_id = self._config_repo.ensure_config(
+            embedding.EMBEDDING_CONFIG_TYPE, embedding.embedding_config_json()
+        )
+        index_version = self._ensure_index_version(
+            version.id, chunk_config_id, embed_config_id
+        )
+        stored_chunks = self._chunk_repo.list_index_chunks(index_version.id)
+        children = [
+            stored for stored in stored_chunks if stored.chunk.parent_ordinal is not None
+        ]
+        collection = self._collection_name(index_version)
+
+        self._set_stage(task.id, TaskStage.EMBEDDING)
+        self._embed_and_write(task, collection, children)
+        # 向量写入已随嵌入批次完成：本阶段作为写入完成的边界推进
+        self._set_stage(task.id, TaskStage.WRITING_VECTOR_INDEX)
+        self._set_stage(task.id, TaskStage.VALIDATING_INDEX)
+        self._validate_index(index_version.id, collection, children)
+        # 激活前最后取消点：激活事务不可中断
+        self._checkpoint(task.id)
+        self._set_stage(task.id, TaskStage.ACTIVATING_VERSION)
+        self._index_repo.activate(index_version.id)
+        # 首个活动版本产生即文档就绪；多版本时最新激活胜出
+        self._document_repo.set_active_version(version.document_id, version.id)
         self._succeed(task.id)
 
+    def _embed_and_write(
+        self, task: Task, collection: str, children: list[StoredChunk]
+    ) -> None:
+        """按批嵌入子切片并写入 staging 集合，逐批推进游标 checkpoint
+
+        先写向量后推进游标：中断重写当前批，向量按记录 ID 幂等，
+        续跑只补尾部批次（向量化 API 成本不重复）
+        """
+        gateway = self._require_gateway()
+        total = len(children)
+        done_ordinal = self._embedded_cursor(task.checkpoint_json)
+        done_count = 0
+        for start in range(0, total, embedding.EMBEDDING_BATCH_SIZE):
+            batch = children[start : start + embedding.EMBEDDING_BATCH_SIZE]
+            if batch[-1].chunk.ordinal <= done_ordinal:
+                done_count += len(batch)
+                continue
+            vectors = gateway.embed_texts(
+                [stored.chunk.content for stored in batch]
+            )
+            self._vector_index.upsert_vectors(
+                collection, [stored.id for stored in batch], vectors
+            )
+            done_count += len(batch)
+            self._task_repo.update_stage(
+                task.id,
+                self._worker_id,
+                stage=TaskStage.EMBEDDING,
+                progress=self._embedding_progress(done_count, total),
+                checkpoint_json=json.dumps(
+                    {"embedded_until": batch[-1].chunk.ordinal},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+            self._checkpoint(task.id)
+
+    def _validate_index(
+        self,
+        index_version_id: str,
+        collection: str,
+        children: list[StoredChunk],
+    ) -> None:
+        """验证 staging 集合与切片事实一致并记录完整性基准
+
+        数量与 ID 集合在向量侧复核；完整性哈希覆盖子切片序号与内容
+        哈希序列（Chroma 不存内容哈希，该基准供重建与健康检查比对）
+        """
+        expected_ids = [stored.id for stored in children]
+        actual_count = self._vector_index.count_vectors(collection)
+        actual_ids = set(self._vector_index.list_vector_ids(collection))
+        if actual_count != len(expected_ids) or actual_ids != set(expected_ids):
+            raise IndexValidationError(
+                f"向量集合与切片事实不一致: 期望 {len(expected_ids)} 条,"
+                f" 实际 {actual_count} 条"
+            )
+        self._index_repo.record_validation(
+            index_version_id,
+            chunk_count=len(children),
+            integrity_hash=integrity_hash([stored.chunk for stored in children]),
+        )
+
     def _ensure_index_version(
-        self, document_version_id: str, config_id: str
+        self,
+        document_version_id: str,
+        chunking_config_id: str,
+        embedding_profile_id: str,
     ) -> IndexVersion:
         """复用或创建该文档版本的 staging 索引版本
 
         同一文档版本同时至多一个在途 staging 索引：切片中断续跑复用
         既有记录（切片按序号幂等重写），避免每次尝试遗留孤儿 staging；
-        配置不一致的既有 staging 不复用（留待补偿清理），以新索引表达
-        参数变化
+        任一配置不一致的既有 staging 不复用（留待补偿清理），以新索引
+        表达参数变化
         """
         reusable = None
         for index in self._index_repo.list_by_document_version(document_version_id):
             if (
                 index.status is IndexVersionStatus.STAGING
-                and index.chunking_config_id == config_id
+                and index.chunking_config_id == chunking_config_id
+                and index.embedding_profile_id == embedding_profile_id
             ):
                 reusable = index
         if reusable is not None:
             return reusable
         return self._index_repo.create(
-            document_version_id, chunking_config_id=config_id
+            document_version_id,
+            chunking_config_id=chunking_config_id,
+            embedding_profile_id=embedding_profile_id,
         )
 
+    def _collection_name(self, index_version: IndexVersion) -> str:
+        """解析索引版本的向量集合名并保证已登记（幂等）"""
+        name = f"{_COLLECTION_PREFIX}{index_version.id}"
+        if index_version.vector_collection != name:
+            self._index_repo.set_vector_collection(index_version.id, name)
+        return name
+
+    @staticmethod
+    def _embedded_cursor(checkpoint_json: str | None) -> int:
+        """读取嵌入批次游标（已完成批次的最后一个切片序号；未开始为 -1）"""
+        if not checkpoint_json:
+            return -1
+        payload = json.loads(checkpoint_json)
+        cursor = payload.get("embedded_until") if isinstance(payload, dict) else None
+        return cursor if isinstance(cursor, int) else -1
+
+    @staticmethod
+    def _embedding_progress(done_count: int, total: int) -> float:
+        """嵌入批次进度：在切片完成与写入完成区间内按批线性推进"""
+        if total == 0:
+            return _EMBED_PROGRESS_BASE + _EMBED_PROGRESS_SPAN
+        return round(
+            _EMBED_PROGRESS_BASE + _EMBED_PROGRESS_SPAN * done_count / total, 4
+        )
+
+    def _require_gateway(self) -> EmbeddingGateway:
+        """读取向量化网关；未配置密钥时按认证失败处理"""
+        if self._embedding_gateway is None:
+            raise EmbeddingAuthError("未配置向量化服务密钥")
+        return self._embedding_gateway
+
     def _succeed(self, task_id: str) -> None:
-        """任务成功收尾：迁移终态；与取消请求竞争时按取消语义收尾"""
+        """任务成功收尾：进度置满并迁移终态；与取消请求竞争时按取消语义收尾"""
+        self._set_stage(task_id, TaskStage.COMPLETED)
         try:
             self._task_repo.transition(
                 task_id, TaskStatus.SUCCEEDED, stage=TaskStage.COMPLETED

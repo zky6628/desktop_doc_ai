@@ -180,3 +180,13 @@ class EmbeddingProtocolViolationError(EmbeddingError):
     """响应违反协议：未知业务错误码、数量/维度/对齐校验失败，不可自动重试"""
 
     error_code = "EMBEDDING_PROTOCOL_VIOLATION"
+
+
+class IndexValidationError(RepositoryError):
+    """派生索引完整性校验失败：数量或 ID 集合与业务事实不一致
+
+    属确定性校验失败，不自动重试；staging 产物留待补偿清理，
+    重试通过人工触发（重新导入产生新索引版本）
+    """
+
+    error_code = "INDEX_VALIDATION_FAILED"

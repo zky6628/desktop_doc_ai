@@ -80,6 +80,35 @@ class Chunk:
     block_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class StoredChunk:
+    """已落库切片：向量写入需要数据库主键作为记录 ID
+
+    切片主键经按序号 upsert 保持跨重放稳定，向量化以它为向量 ID，
+    检索命中后经主键回查业务事实
+    """
+
+    id: str
+    chunk: Chunk
+
+
+def integrity_hash(chunks: list[Chunk]) -> str:
+    """计算检索单元完整性哈希（索引验证与重建比对的基准）
+
+    哈希输入为子切片的序号与内容哈希的规范 JSON 序列（父切片不参与
+    向量召回，不计入完整性口径）；输入顺序须按序号升序
+
+    :param chunks: 已按序号升序排列的切片
+    :return: SHA-256 十六进制文本
+    """
+    payload = [
+        {"ordinal": chunk.ordinal, "content_hash": chunk.content_hash}
+        for chunk in chunks
+        if chunk.parent_ordinal is not None
+    ]
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
 def make_chunk(
     *,
     ordinal: int,

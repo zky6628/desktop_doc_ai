@@ -176,8 +176,10 @@ from langchain_core.embeddings import Embeddings
 # 导入自定义文件解析器（支持 TXT/DOCX/PDF）
 from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
 # 工作台 v1 运行时：SQLite 事实源 + 任务化导入（/api/v1）
+import chromadb
 from app.api.v1 import ApiV1Dependencies, create_api_router
 from app.domain.ids import uuid7
+from app.infrastructure.embedding import DashScopeEmbeddingGateway
 from app.infrastructure.ingest import ImportOrchestrator
 from app.infrastructure.mineru import MinerUClient
 from app.infrastructure.sqlite.connection import connect
@@ -194,6 +196,7 @@ from app.infrastructure.sqlite.repositories import (
 )
 from app.infrastructure.sqlite.repositories.task_repository import SQLiteTaskRepository
 from app.infrastructure.storage.upload_staging import UploadStagingStore
+from app.infrastructure.vectorindex import ChromaVectorIndexAdapter
 from app.infrastructure.worker import ImportTaskWorker
 # 导入 LLM 封装类（支持网络模型和本地 Ollama 模型）
 from llm_wrapper import LLMWrapper, LLMProviderType, DEFAULT_NETWORK_MODEL, DEFAULT_LOCAL_MODEL
@@ -650,6 +653,12 @@ WORKBENCH_STAGING_DIR = (
     os.getenv("WORKBENCH_STAGING_DIR")
     or os.path.join(BASE_DIR, "uploads", "staging")
 )
+# 工作台向量库独立持久化目录：与旧链路的 chroma_db 完全隔离，
+# 避免打开旧库触发供应方 schema 变更影响旧 UI
+WORKBENCH_CHROMA_DIR = (
+    os.getenv("WORKBENCH_CHROMA_DIR")
+    or os.path.join(BASE_DIR, "data", "chroma_workbench")
+)
 
 os.makedirs(os.path.dirname(WORKBENCH_DB_PATH), exist_ok=True)
 
@@ -669,6 +678,7 @@ _workbench_task_repo = SQLiteTaskRepository(_workbench_conn)
 _import_worker: ImportTaskWorker | None = None
 if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "false", "off"):
     _mineru_token = os.getenv("MINERU_API_TOKEN") or ""
+    _dashscope_key = os.getenv("DASHSCOPE_API_KEY") or ""
     _import_worker = ImportTaskWorker(
         task_repo=_workbench_task_repo,
         document_repo=SQLiteDocumentRepository(_workbench_conn),
@@ -678,6 +688,12 @@ if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "
         index_repo=SQLiteIndexVersionRepository(_workbench_conn),
         chunk_repo=SQLiteChunkRepository(_workbench_conn),
         config_repo=SQLiteConfigRepository(_workbench_conn),
+        embedding_gateway=(
+            DashScopeEmbeddingGateway(api_key=_dashscope_key) if _dashscope_key else None
+        ),
+        vector_index=ChromaVectorIndexAdapter(
+            chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR)
+        ),
         mineru_client=MinerUClient(api_token=_mineru_token) if _mineru_token else None,
         work_dir=os.path.join(WORKBENCH_STAGING_DIR, "cloud_results"),
         worker_id=f"worker-{uuid7()}",

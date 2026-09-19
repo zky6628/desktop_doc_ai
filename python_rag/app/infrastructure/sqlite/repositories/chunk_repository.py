@@ -9,12 +9,18 @@
 """
 from collections.abc import Sequence
 
-from app.domain.chunking import CHUNK_BLOCK_RELATION_EXACT, Chunk
+from app.domain.chunking import CHUNK_BLOCK_RELATION_EXACT, Chunk, StoredChunk
 from app.domain.errors import EntityNotFoundError
 from app.domain.ids import uuid7
 from app.domain.ports import ChunkRepository as ChunkRepositoryPort
 
 from ..transactions import run_in_transaction
+
+# 切片与定位关系列的读取顺序（与 _to_stored_chunk 对应）
+_CHUNK_COLUMNS = (
+    "id, parent_chunk_id, ordinal, content, content_hash, section_path,"
+    " page_start, page_end"
+)
 
 
 class SQLiteChunkRepository(ChunkRepositoryPort):
@@ -121,3 +127,48 @@ class SQLiteChunkRepository(ChunkRepositoryPort):
                 " VALUES (?, ?, ?)",
                 (chunk_id, block_id, CHUNK_BLOCK_RELATION_EXACT),
             )
+
+    def list_index_chunks(self, index_version_id: str) -> list[StoredChunk]:
+        """按序号升序读取切片（方法契约见领域 Port 定义）"""
+        exists = self._conn.execute(
+            "SELECT 1 FROM index_versions WHERE id = ?", (index_version_id,)
+        ).fetchone()
+        if exists is None:
+            raise EntityNotFoundError(f"索引版本不存在: {index_version_id}")
+
+        rows = self._conn.execute(
+            f"SELECT {_CHUNK_COLUMNS} FROM chunks"
+            " WHERE index_version_id = ? ORDER BY ordinal",
+            (index_version_id,),
+        ).fetchall()
+        # 主键到序号的映射：父子引用按序号语义还原为领域值对象
+        id_to_ordinal = {row[0]: row[2] for row in rows}
+        links: dict[str, list[str]] = {}
+        for chunk_id, block_id in self._conn.execute(
+            "SELECT chunk_id, block_id FROM chunk_block_links"
+            " WHERE chunk_id IN (SELECT id FROM chunks WHERE index_version_id = ?)"
+            " ORDER BY rowid",
+            (index_version_id,),
+        ).fetchall():
+            links.setdefault(chunk_id, []).append(block_id)
+        return [self._to_stored_chunk(row, id_to_ordinal, links) for row in rows]
+
+    @staticmethod
+    def _to_stored_chunk(
+        row, id_to_ordinal: dict[str, int], links: dict[str, list[str]]
+    ) -> StoredChunk:
+        """把查询行转换为带主键的领域切片（父引用还原为父序号）"""
+        parent_ordinal = (
+            id_to_ordinal.get(row[1]) if row[1] is not None else None
+        )
+        chunk = Chunk(
+            ordinal=row[2],
+            content=row[3],
+            content_hash=row[4],
+            parent_ordinal=parent_ordinal,
+            section_path=row[5],
+            page_start=row[6],
+            page_end=row[7],
+            block_ids=tuple(links.get(row[0], [])),
+        )
+        return StoredChunk(id=row[0], chunk=chunk)
