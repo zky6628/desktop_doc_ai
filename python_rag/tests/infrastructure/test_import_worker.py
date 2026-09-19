@@ -12,17 +12,12 @@ import time
 import zipfile
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
-import chromadb
-import pytest
 from docx import Document as DocxDocument
 
 from app.domain.chunking import chunk_blocks
 from app.domain.entities import TaskStage, TaskStatus
 from app.domain.errors import CloudTransportError, EmbeddingTransientError
-from app.domain.parser_routing import decide_parser_route
-from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.mineru.archive import extract_archive
 from app.infrastructure.mineru.dto import (
     BatchPollResult,
@@ -30,124 +25,15 @@ from app.infrastructure.mineru.dto import (
     ProviderFileStatus,
 )
 from app.infrastructure.parsing import TxtMarkdownParser
-from app.infrastructure.sqlite.connection import connect
-from app.infrastructure.sqlite.repositories import (
-    SQLiteChunkRepository,
-    SQLiteConfigRepository,
-    SQLiteContentRepository,
-    SQLiteDocumentRepository,
-    SQLiteDocumentVersionRepository,
-    SQLiteExternalTaskRepository,
-    SQLiteIndexVersionRepository,
-    SQLiteKnowledgeBaseRepository,
-    SQLiteTaskRepository,
-)
-from app.infrastructure.sqlite.repositories.import_repository import (
-    SQLiteImportRepository,
-)
-from app.infrastructure.storage.upload_staging import UploadStagingStore
-from app.infrastructure.vectorindex import ChromaVectorIndexAdapter
-from app.infrastructure.worker import ImportTaskWorker
 
-from .schema_helpers import fresh_db
+from .schema_helpers import (
+    FakeEmbeddingGateway,
+    ensure_pipeline_configs,
+)
+from .schema_helpers import (
+    import_file as _import_file,
+)
 from .test_parsing_pdf import _build_pdf
-
-# 构造参数哨兵：区分"显式传 None"与"使用夹具默认替身"
-_UNSET = object()
-
-
-class _FakeEmbeddingGateway:
-    """确定性向量化替身：记录调用文本，可选首调挂钩（取消场景用）"""
-
-    def __init__(self, on_first_call=None) -> None:
-        self.embedded_texts: list[str] = []
-        self._on_first_call = on_first_call
-
-    def embed_texts(self, texts):
-        if self._on_first_call is not None:
-            hook, self._on_first_call = self._on_first_call, None
-            hook()
-        self.embedded_texts.extend(texts)
-        return [[float(len(text) % 9 + 1)] * 4 for text in texts]
-
-
-@pytest.fixture()
-def env(tmp_path):
-    """临时库 + 全套仓储 + Worker 构建器（云端客户端由测试注入）"""
-    db_path, _ = fresh_db(tmp_path, name="import_worker.db")
-    conn = connect(db_path)
-    kb = SQLiteKnowledgeBaseRepository(conn).create(name="测试知识库")
-    repos = {
-        "tasks": SQLiteTaskRepository(conn),
-        "documents": SQLiteDocumentRepository(conn),
-        "versions": SQLiteDocumentVersionRepository(conn),
-        "content": SQLiteContentRepository(conn),
-        "external": SQLiteExternalTaskRepository(conn),
-        "indexes": SQLiteIndexVersionRepository(conn),
-        "chunks": SQLiteChunkRepository(conn),
-        "configs": SQLiteConfigRepository(conn),
-        "imports": SQLiteImportRepository(conn),
-    }
-
-    def build(mineru=None, embedding_gateway=_UNSET, vector_index=None):
-        return ImportTaskWorker(
-            task_repo=repos["tasks"],
-            document_repo=repos["documents"],
-            version_repo=repos["versions"],
-            content_repo=repos["content"],
-            external_repo=repos["external"],
-            index_repo=repos["indexes"],
-            chunk_repo=repos["chunks"],
-            config_repo=repos["configs"],
-            embedding_gateway=(
-                fake_gateway if embedding_gateway is _UNSET else embedding_gateway
-            ),
-            vector_index=(
-                vector_adapter if vector_index is None else vector_index
-            ),
-            text_tokenizer=JiebaTokenizer(),
-            keyword_index=SQLiteFtsKeywordIndex(conn),
-            mineru_client=mineru,
-            work_dir=str(tmp_path / "cloud_results"),
-            worker_id="worker-test",
-        )
-
-    chroma_client = chromadb.EphemeralClient()
-    vector_adapter = ChromaVectorIndexAdapter(chroma_client)
-    fake_gateway = _FakeEmbeddingGateway()
-
-    yield SimpleNamespace(
-        conn=conn, repos=repos, staging=str(tmp_path / "staging"),
-        kb_id=kb.id, build=build, vector_index=vector_adapter,
-        gateway=fake_gateway,
-    )
-    conn.close()
-
-
-def _import_file(env, filename: str, content: bytes, preference: str = "auto") -> str:
-    """经真实暂存与导入事务建立导入任务，返回任务 ID"""
-    staged = UploadStagingStore(env.staging).stage(iter([content]), filename)
-    route = decide_parser_route(staged.extension, preference)
-    outcome = env.repos["imports"].create_import(
-        env.kb_id,
-        display_name=staged.display_name,
-        source_path=staged.staging_path,
-        source_sha256=staged.sha256,
-        mime_type=staged.mime_type,
-        size_bytes=staged.size_bytes,
-        parser_mode=route.mode.value,
-        parser_route_json=json.dumps(
-            {
-                "mode": route.mode.value,
-                "reason": route.reason,
-                "router_config_version": route.router_config_version,
-                "parser_preference": preference,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-    )
-    return outcome.task.id
 
 
 def _block_types(env, version_id: str) -> list[str]:
@@ -389,40 +275,6 @@ def test_local_task_activates_index_and_document(env):
     assert document.active_document_version_id == version_id
 
 
-def _ensure_configs(env) -> tuple[str, str]:
-    """确保切片与嵌入配置行存在（构造中断现场用），返回（切片, 嵌入）配置 ID"""
-    chunk_config_id = env.repos["configs"].ensure_config(
-        "chunking",
-        json.dumps(
-            {
-                "chunking_config_version": "1",
-                "parent_chunk_chars": 1200,
-                "child_chunk_chars": 400,
-                "content_separator": "\n\n",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-    )
-    embed_config_id = env.repos["configs"].ensure_config(
-        "embedding",
-        json.dumps(
-            {
-                "embedding_config_version": "1",
-                "model": "text-embedding-v4",
-                "dimensions": 1024,
-                "batch_size": 10,
-                "text_type": "document",
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-    )
-    return chunk_config_id, embed_config_id
-
-
 def _backdate_lease(env, task_id: str, stage: str) -> None:
     """把任务置入指定阶段并使其租约失效（模拟 Worker 崩溃现场）"""
     expires_at = (
@@ -456,7 +308,7 @@ def test_chunking_resume_reuses_staging_index(env):
     # 前序尝试已确保配置并创建 staging 索引
     claimed = env.repos["tasks"].claim_next("worker-crashed", task_type="import")
     assert claimed.id == task_id
-    chunk_config_id, embed_config_id = _ensure_configs(env)
+    chunk_config_id, embed_config_id, _ = ensure_pipeline_configs(env.repos["configs"])
     index_version = env.repos["indexes"].create(
         claimed.document_version_id,
         chunking_config_id=chunk_config_id,
@@ -497,7 +349,7 @@ def test_embedding_resume_continues_from_cursor(env):
     # 游标推进到首批末尾序号、租约失效
     claimed = env.repos["tasks"].claim_next("worker-crashed", task_type="import")
     assert claimed.id == task_id
-    chunk_config_id, embed_config_id = _ensure_configs(env)
+    chunk_config_id, embed_config_id, _ = ensure_pipeline_configs(env.repos["configs"])
     index_version = env.repos["indexes"].create(
         claimed.document_version_id,
         chunking_config_id=chunk_config_id,
@@ -519,7 +371,7 @@ def test_embedding_resume_continues_from_cursor(env):
         [stored.id for stored in first_batch],
         [[1.0] * 4] * len(first_batch),
     )
-    fresh_gateway = _FakeEmbeddingGateway()
+    fresh_gateway = FakeEmbeddingGateway()
     worker = env.build(embedding_gateway=fresh_gateway)
     _backdate_lease(env, task_id, "embedding")
     env.conn.execute(
@@ -543,7 +395,7 @@ def test_transient_embedding_error_retries_then_succeeds(env):
     """瞬态嵌入失败走自动重试；到期提升后续跑到激活成功"""
     task_id = _import_file(env, "笔记.txt", "可重试内容".encode())
 
-    class _FlakyGateway(_FakeEmbeddingGateway):
+    class _FlakyGateway(FakeEmbeddingGateway):
         """首批抛瞬态错误，其后正常"""
 
         def embed_texts(self, texts):
@@ -600,7 +452,7 @@ def test_validation_mismatch_fails_without_activation(env):
     # 构造"集合存在残留向量"现场（此前中断尝试的遗留）
     claimed = env.repos["tasks"].claim_next("worker-crashed", task_type="import")
     assert claimed.id == task_id
-    chunk_config_id, embed_config_id = _ensure_configs(env)
+    chunk_config_id, embed_config_id, _ = ensure_pipeline_configs(env.repos["configs"])
     index_version = env.repos["indexes"].create(
         claimed.document_version_id,
         chunking_config_id=chunk_config_id,
@@ -634,7 +486,7 @@ def test_validation_mismatch_fails_without_activation(env):
 def test_cancel_during_embedding_leaves_staging(env):
     """嵌入批次间收到取消：任务取消收尾，不产生激活"""
     task_id = _import_file(env, "笔记.txt", "取消场景内容".encode())
-    gateway = _FakeEmbeddingGateway(
+    gateway = FakeEmbeddingGateway(
         on_first_call=lambda: env.repos["tasks"].request_cancel(task_id)
     )
     worker = env.build(embedding_gateway=gateway)

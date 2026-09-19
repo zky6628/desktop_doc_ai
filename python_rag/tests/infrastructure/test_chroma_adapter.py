@@ -54,7 +54,6 @@ def test_missing_collection_reads_as_zero(adapter):
     name = _collection()
     assert adapter.count_vectors(name) == 0
     assert adapter.list_vector_ids(name) == []
-    assert adapter.count_vectors(name) == 0
 
 
 def test_delete_collection_removes_records(adapter):

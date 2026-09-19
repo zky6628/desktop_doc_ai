@@ -29,7 +29,7 @@ from app.infrastructure.sqlite.repositories import (
 )
 from app.infrastructure.vectorindex import ChromaVectorIndexAdapter
 
-from .schema_helpers import fresh_db
+from .schema_helpers import BlockedDeleteVectorIndex, fresh_db
 from .test_index_health import _LONG_PARAGRAPH, _build_index, _stage_version
 
 
@@ -41,22 +41,6 @@ class _FixedClock:
 
     def __call__(self) -> str:
         return self.now.isoformat(timespec="seconds")
-
-
-class _BlockedDeleteVectorIndex:
-    """对指定集合名的删除抛文件系统占用错误，其余方法委托真实适配器"""
-
-    def __init__(self, inner, blocked_names: set[str]) -> None:
-        self._inner = inner
-        self._blocked = blocked_names
-
-    def delete_collection(self, collection_name: str) -> None:
-        if collection_name in self._blocked:
-            raise OSError("[WinError 32] 另一个程序正在使用此文件")
-        self._inner.delete_collection(collection_name)
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
 
 
 @pytest.fixture()
@@ -236,7 +220,7 @@ def test_transient_failure_recorded_and_other_targets_cleaned(env):
     env.keyword_index.rebuild_namespace(
         orphan_namespace, [KeywordDocument(chunk_id="c", content="孤儿")]
     )
-    wrapped = _BlockedDeleteVectorIndex(env.vector_index, {f"wb-idx-{retired.id}"})
+    wrapped = BlockedDeleteVectorIndex(env.vector_index, {f"wb-idx-{retired.id}"})
     service = IndexCleanupService(
         index_repo=env.repos["indexes"],
         chunk_repo=env.repos["chunks"],

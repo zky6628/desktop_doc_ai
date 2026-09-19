@@ -14,10 +14,8 @@ from app.domain.errors import (
 from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.repositories import SQLiteTaskRepository
 
+from .schema_helpers import backdate_lease as _backdate_lease
 from .schema_helpers import fresh_db, insert_task
-
-# 过去/未来固定时刻（UTC ISO-8601），用于构造过期与有效租约
-_PAST_TIME = "2020-01-01T00:00:00+00:00"
 
 
 @pytest.fixture()
@@ -27,13 +25,6 @@ def task_repo(tmp_path):
     conn = connect(db_path)
     yield SQLiteTaskRepository(conn), conn, db_path
     conn.close()
-
-
-def _backdate_lease(conn, task_id: str, expires_at: str = _PAST_TIME) -> None:
-    """把任务租约到期时间改写为指定时刻（测试构造过期/未来租约）"""
-    conn.execute(
-        "UPDATE tasks SET lease_expires_at = ? WHERE id = ?", (expires_at, task_id)
-    )
 
 
 def _release_lease(conn, task_id: str) -> None:

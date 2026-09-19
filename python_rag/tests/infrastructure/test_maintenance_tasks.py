@@ -7,45 +7,13 @@
 import json
 import time
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
-
-import chromadb
-import pytest
 
 from app.domain.errors import EmbeddingTransientError
 from app.domain.ids import uuid7
-from app.domain.parser_routing import decide_parser_route
-from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
-from app.infrastructure.sqlite.connection import connect
-from app.infrastructure.sqlite.repositories import (
-    SQLiteChunkRepository,
-    SQLiteConfigRepository,
-    SQLiteContentRepository,
-    SQLiteDocumentRepository,
-    SQLiteDocumentVersionRepository,
-    SQLiteExternalTaskRepository,
-    SQLiteIndexVersionRepository,
-    SQLiteKnowledgeBaseRepository,
-    SQLiteTaskRepository,
-)
-from app.infrastructure.sqlite.repositories.import_repository import (
-    SQLiteImportRepository,
-)
-from app.infrastructure.storage.upload_staging import UploadStagingStore
-from app.infrastructure.vectorindex import ChromaVectorIndexAdapter
-from app.infrastructure.worker import ImportTaskWorker
 
-from .schema_helpers import fresh_db
+from .schema_helpers import BlockedDeleteVectorIndex
+from .schema_helpers import import_file as _import_file
 from .test_index_cleanup import _build_retired_index
-
-_UNSET = object()
-
-
-class _FakeEmbeddingGateway:
-    """确定性向量化替身"""
-
-    def embed_texts(self, texts):
-        return [[float(len(text) % 9 + 1)] * 4 for text in texts]
 
 
 class _FailingGateway:
@@ -53,109 +21,6 @@ class _FailingGateway:
 
     def embed_texts(self, texts):
         raise EmbeddingTransientError("供应商限流")
-
-
-class _BlockedDeleteVectorIndex:
-    """对指定集合名的删除抛文件系统占用错误，其余方法委托真实适配器"""
-
-    def __init__(self, inner, blocked_names: set[str]) -> None:
-        self._inner = inner
-        self.blocked = blocked_names
-
-    def delete_collection(self, collection_name: str) -> None:
-        if collection_name in self.blocked:
-            raise OSError("[WinError 32] 另一个程序正在使用此文件")
-        self._inner.delete_collection(collection_name)
-
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
-
-
-@pytest.fixture()
-def env(tmp_path):
-    """临时库 + 全套仓储 + Worker 构建器"""
-    db_path, _ = fresh_db(tmp_path, name="maintenance_tasks.db")
-    conn = connect(db_path)
-    kb = SQLiteKnowledgeBaseRepository(conn).create(name="测试知识库")
-    repos = {
-        "tasks": SQLiteTaskRepository(conn),
-        "documents": SQLiteDocumentRepository(conn),
-        "versions": SQLiteDocumentVersionRepository(conn),
-        "content": SQLiteContentRepository(conn),
-        "external": SQLiteExternalTaskRepository(conn),
-        "indexes": SQLiteIndexVersionRepository(conn),
-        "chunks": SQLiteChunkRepository(conn),
-        "configs": SQLiteConfigRepository(conn),
-        "imports": SQLiteImportRepository(conn),
-    }
-    vector_adapter = ChromaVectorIndexAdapter(
-        # 周期扫描做全量孤儿扫描：每个测试用独立持久化目录隔离实例
-        chromadb.PersistentClient(path=str(tmp_path / "chroma"))
-    )
-    keyword_index = SQLiteFtsKeywordIndex(conn)
-
-    def build(embedding_gateway=_UNSET, vector_index=None):
-        return ImportTaskWorker(
-            task_repo=repos["tasks"],
-            document_repo=repos["documents"],
-            version_repo=repos["versions"],
-            content_repo=repos["content"],
-            external_repo=repos["external"],
-            index_repo=repos["indexes"],
-            chunk_repo=repos["chunks"],
-            config_repo=repos["configs"],
-            embedding_gateway=(
-                fake_gateway if embedding_gateway is _UNSET else embedding_gateway
-            ),
-            vector_index=(
-                vector_adapter if vector_index is None else vector_index
-            ),
-            text_tokenizer=JiebaTokenizer(),
-            keyword_index=keyword_index,
-            mineru_client=None,
-            work_dir=str(tmp_path / "cloud_results"),
-            worker_id="worker-test",
-        )
-
-    fake_gateway = _FakeEmbeddingGateway()
-    yield SimpleNamespace(
-        conn=conn,
-        repos=repos,
-        kb_id=kb.id,
-        staging=str(tmp_path / "staging"),
-        build=build,
-        vector_index=vector_adapter,
-        keyword_index=keyword_index,
-        tokenizer=JiebaTokenizer(),
-    )
-    conn.close()
-
-
-def _import_file(env, filename: str, content: bytes, duplicate_policy: str = "skip") -> str:
-    """经真实暂存与导入事务建立导入任务，返回任务 ID"""
-    staged = UploadStagingStore(env.staging).stage(iter([content]), filename)
-    route = decide_parser_route(staged.extension, "auto")
-    outcome = env.repos["imports"].create_import(
-        env.kb_id,
-        display_name=staged.display_name,
-        source_path=staged.staging_path,
-        source_sha256=staged.sha256,
-        mime_type=staged.mime_type,
-        size_bytes=staged.size_bytes,
-        duplicate_policy=duplicate_policy,
-        parser_mode=route.mode.value,
-        parser_route_json=json.dumps(
-            {
-                "mode": route.mode.value,
-                "reason": route.reason,
-                "router_config_version": route.router_config_version,
-                "parser_preference": "auto",
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ),
-    )
-    return outcome.task.id
 
 
 def _cleanup_tasks(env) -> list:
@@ -233,7 +98,7 @@ def test_cleanup_transient_failure_retries_then_compensates(env):
     retired, _ = _build_retired_index(env)
 
     cleanup = env.repos["tasks"].create("cleanup")
-    wrapped = _BlockedDeleteVectorIndex(env.vector_index, {f"wb-idx-{retired.id}"})
+    wrapped = BlockedDeleteVectorIndex(env.vector_index, {f"wb-idx-{retired.id}"})
     blocked_worker = env.build(vector_index=wrapped)
 
     finished = _drive_to_terminal(env, blocked_worker, cleanup.id)
@@ -259,7 +124,7 @@ def test_cleanup_compensation_depth_capped(env):
 
     cleanup = env.repos["tasks"].create("cleanup")
     blocked_worker = env.build(
-        vector_index=_BlockedDeleteVectorIndex(
+        vector_index=BlockedDeleteVectorIndex(
             env.vector_index, {f"wb-idx-{retired.id}"}
         )
     )

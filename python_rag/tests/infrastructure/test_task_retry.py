@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.domain import task_state
-from app.domain.entities import Task, TaskStage, TaskStatus
+from app.domain.entities import TaskStage, TaskStatus
 from app.domain.errors import (
     EntityNotFoundError,
     TaskLeaseLostError,
@@ -15,6 +15,7 @@ from app.domain.errors import (
 from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.repositories import SQLiteTaskRepository
 
+from .schema_helpers import claimed_task as _claimed_task
 from .schema_helpers import fresh_db
 
 
@@ -25,15 +26,6 @@ def task_repo(tmp_path):
     conn = connect(db_path)
     yield SQLiteTaskRepository(conn), conn, db_path
     conn.close()
-
-
-def _claimed_task(repo: SQLiteTaskRepository) -> Task:
-    """创建并领取一个任务（进入 running，持有租约）"""
-    task = repo.create("import")
-    claimed = repo.claim_next("worker-1")
-    assert claimed is not None
-    assert claimed.id == task.id
-    return claimed
 
 
 def _expire_next_retry(conn, task_id: str) -> None:

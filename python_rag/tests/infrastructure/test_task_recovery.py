@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 """任务重启恢复测试：失效执行重排、失效取消收尾与全状态恢复编排"""
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.domain.entities import Task, TaskStage, TaskStatus
+from app.domain.entities import TaskStage, TaskStatus
 from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.repositories import SQLiteTaskRepository
 
+from .schema_helpers import backdate_lease as _backdate_lease
+from .schema_helpers import claimed_task as _claimed_task
 from .schema_helpers import fresh_db
 
 
@@ -18,25 +19,6 @@ def task_repo(tmp_path):
     conn = connect(db_path)
     yield SQLiteTaskRepository(conn), conn, db_path
     conn.close()
-
-
-def _claimed_task(repo: SQLiteTaskRepository, priority: int = 0) -> Task:
-    """创建并领取一个任务（进入 running，持有租约）"""
-    task = repo.create("import", priority=priority)
-    claimed = repo.claim_next("worker-1")
-    assert claimed is not None
-    assert claimed.id == task.id
-    return claimed
-
-
-def _backdate_lease(conn, task_id: str, seconds_ago: int) -> None:
-    """把租约到期时间改到过去指定秒数（构造失效/宽限内租约）"""
-    expires_at = (
-        datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
-    ).isoformat(timespec="seconds")
-    conn.execute(
-        "UPDATE tasks SET lease_expires_at = ? WHERE id = ?", (expires_at, task_id)
-    )
 
 
 def test_stale_running_requeued_with_checkpoint_preserved(task_repo):

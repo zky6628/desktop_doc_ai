@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-schema 测试公共辅助：数据链插入与临时库构建。
+测试公共辅助：schema 数据链插入、临时库构建与跨文件共享的行为替身。
 
-插入函数直接执行 SQL，字段值尽量提供默认，测试按需覆盖关键字段。
+插入函数直接执行 SQL，字段值尽量提供默认，测试按需覆盖关键字段；
+模块后半部分为导入/维护类测试共享的替身与驱动辅助（pytest fixture
+无法跨文件导入，需共享的 fixture 放 conftest.py，其余普通辅助放此）。
 """
+import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from app.domain.ids import uuid7
+from app.domain.parser_routing import decide_parser_route
 from app.infrastructure.sqlite.migrations import (
     _DEFAULT_MIGRATIONS_DIR,
     apply_migrations,
 )
+from app.infrastructure.storage.upload_staging import UploadStagingStore
 
 # 统一的固定时间戳（UTC ISO-8601 文本），避免测试依赖当前时间
 FIXED_TIME = "2026-09-17T00:00:00+00:00"
@@ -205,3 +211,100 @@ def insert_external_task(
          provider_task_id, state),
     )
     return external_id
+
+
+# ===================== 导入/维护类测试共享的替身与驱动辅助 =====================
+
+
+class FakeEmbeddingGateway:
+    """确定性向量化替身：记录调用文本，可选首调挂钩（取消场景用）"""
+
+    def __init__(self, on_first_call=None) -> None:
+        self.embedded_texts: list[str] = []
+        self._on_first_call = on_first_call
+
+    def embed_texts(self, texts):
+        if self._on_first_call is not None:
+            hook, self._on_first_call = self._on_first_call, None
+            hook()
+        self.embedded_texts.extend(texts)
+        return [[float(len(text) % 9 + 1)] * 4 for text in texts]
+
+
+class BlockedDeleteVectorIndex:
+    """对指定集合名的删除抛文件系统占用错误，其余方法委托真实适配器"""
+
+    def __init__(self, inner, blocked_names) -> None:
+        self._inner = inner
+        self.blocked = blocked_names
+
+    def delete_collection(self, collection_name: str) -> None:
+        if collection_name in self.blocked:
+            raise OSError("[WinError 32] 另一个程序正在使用此文件")
+        self._inner.delete_collection(collection_name)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def import_file(env, filename: str, content: bytes, preference: str = "auto",
+                duplicate_policy: str = "skip") -> str:
+    """经真实暂存与导入事务建立导入任务，返回任务 ID
+
+    env 为 conftest.py 提供的 Worker 环境夹具（需含 kb_id/repos/staging）
+    """
+    staged = UploadStagingStore(env.staging).stage(iter([content]), filename)
+    route = decide_parser_route(staged.extension, preference)
+    outcome = env.repos["imports"].create_import(
+        env.kb_id,
+        display_name=staged.display_name,
+        source_path=staged.staging_path,
+        source_sha256=staged.sha256,
+        mime_type=staged.mime_type,
+        size_bytes=staged.size_bytes,
+        duplicate_policy=duplicate_policy,
+        parser_mode=route.mode.value,
+        parser_route_json=json.dumps(
+            {
+                "mode": route.mode.value,
+                "reason": route.reason,
+                "router_config_version": route.router_config_version,
+                "parser_preference": preference,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+    return outcome.task.id
+
+
+def ensure_pipeline_configs(config_repo) -> tuple[str, str, str]:
+    """确保切片/嵌入/关键词三类配置行存在，返回三个配置 ID"""
+    from app.domain.chunking import chunking_config_json
+    from app.domain.embedding import embedding_config_json
+    from app.domain.keyword import keyword_config_json
+
+    return (
+        config_repo.ensure_config("chunking", chunking_config_json()),
+        config_repo.ensure_config("embedding", embedding_config_json()),
+        config_repo.ensure_config("keyword", keyword_config_json()),
+    )
+
+
+def claimed_task(repo, priority: int = 0):
+    """创建并领取一个任务（进入 running，持有租约）"""
+    task = repo.create("import", priority=priority)
+    claimed = repo.claim_next("worker-1")
+    assert claimed is not None
+    assert claimed.id == task.id
+    return claimed
+
+
+def backdate_lease(conn: sqlite3.Connection, task_id: str, *, seconds_ago: int = 31) -> None:
+    """把任务租约到期时间改到过去指定秒数（构造租约失效现场）"""
+    expires_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    ).isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE tasks SET lease_expires_at = ? WHERE id = ?", (expires_at, task_id)
+    )

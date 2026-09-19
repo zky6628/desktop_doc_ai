@@ -9,8 +9,7 @@ from types import SimpleNamespace
 import chromadb
 import pytest
 
-from app.domain.chunking import chunk_blocks, chunking_config_json, integrity_hash
-from app.domain.embedding import embedding_config_json
+from app.domain.chunking import chunk_blocks, integrity_hash
 from app.domain.ids import uuid7
 from app.domain.index_maintenance import (
     ISSUE_CHUNK_COUNT_MISMATCH,
@@ -21,7 +20,7 @@ from app.domain.index_maintenance import (
     ISSUE_VECTOR_ID_MISMATCH,
     IndexHealthService,
 )
-from app.domain.keyword import KeywordDocument, keyword_config_json
+from app.domain.keyword import KeywordDocument
 from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.parsing import TxtMarkdownParser
 from app.infrastructure.sqlite.connection import connect
@@ -37,7 +36,7 @@ from app.infrastructure.sqlite.repositories import (
 from app.infrastructure.storage.upload_staging import UploadStagingStore
 from app.infrastructure.vectorindex import ChromaVectorIndexAdapter
 
-from .schema_helpers import fresh_db
+from .schema_helpers import ensure_pipeline_configs, fresh_db
 
 # 两段超预算段落：保证产出多个子切片（父内按子预算再分）
 _LONG_PARAGRAPH = "字" * 500
@@ -83,12 +82,8 @@ def env(tmp_path):
 
 
 def _ensure_configs(env) -> tuple[str, str, str]:
-    """确保切片/嵌入/关键词配置行存在，返回三个配置 ID"""
-    return (
-        env.repos["configs"].ensure_config("chunking", chunking_config_json()),
-        env.repos["configs"].ensure_config("embedding", embedding_config_json()),
-        env.repos["configs"].ensure_config("keyword", keyword_config_json()),
-    )
+    """确保切片/嵌入/关键词配置行存在（转发共享辅助），返回三个配置 ID"""
+    return ensure_pipeline_configs(env.repos["configs"])
 
 
 def _stage_version(env, content: str, filename: str = "健康.txt"):
