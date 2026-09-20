@@ -71,4 +71,27 @@ class AppColors {
 
   /// 强调色透明变体（用于拖拽区域高亮）
   static const Color accentWithOpacity = Color(0x1A3B82F6);
+
+  // ===================== 暗色色板 =====================
+
+  /// 页面背景
+  static const Color darkBackground = Color(0xFF14171C);
+
+  /// 卡片背景
+  static const Color darkCard = Color(0xFF1D2129);
+
+  /// 面层背景（顶栏 / 输入填充）
+  static const Color darkSurface = Color(0xFF232833);
+
+  /// 分割线
+  static const Color darkDivider = Color(0xFF2E3440);
+
+  /// 主文字
+  static const Color darkTextPrimary = Color(0xFFE6E8EB);
+
+  /// 次要文字
+  static const Color darkTextSecondary = Color(0xFF9CA3AF);
+
+  /// 占位文字
+  static const Color darkTextHint = Color(0xFF6B7280);
 }

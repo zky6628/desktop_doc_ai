@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'colors.dart';
 
 /// 应用主题配置
-/// 提供亮色主题，统一组件视觉风格
+/// 亮暗两套主题由同一构建器生成，保证组件视觉风格一致
 class AppTheme {
   AppTheme._();
 
@@ -10,31 +10,73 @@ class AppTheme {
   static const String monoFont = 'RobotoMono';
 
   /// 亮色主题
-  static ThemeData get light {
-    final colorScheme = ColorScheme.light(
-      primary: AppColors.primary,
-      onPrimary: Colors.white,
-      secondary: AppColors.secondary,
-      onSecondary: AppColors.textPrimary,
-      surface: AppColors.card,
-      onSurface: AppColors.textPrimary,
-      error: AppColors.error,
-      onError: Colors.white,
-    );
+  static ThemeData get light => _build(
+        colorScheme: const ColorScheme.light(
+          primary: AppColors.primary,
+          onPrimary: Colors.white,
+          secondary: AppColors.secondary,
+          onSecondary: AppColors.textPrimary,
+          surface: AppColors.card,
+          onSurface: AppColors.textPrimary,
+          error: AppColors.error,
+          onError: Colors.white,
+        ),
+        scaffoldBackground: AppColors.background,
+        appBarBackground: AppColors.primary,
+        appBarForeground: Colors.white,
+        inputFill: AppColors.secondary,
+        inputHint: AppColors.textHint,
+        lineColor: AppColors.divider,
+        textPrimary: AppColors.textPrimary,
+        textSecondary: AppColors.textSecondary,
+      );
 
+  /// 暗色主题
+  static ThemeData get dark => _build(
+        colorScheme: const ColorScheme.dark(
+          primary: AppColors.accent,
+          onPrimary: Colors.white,
+          secondary: AppColors.darkSurface,
+          onSecondary: AppColors.darkTextPrimary,
+          surface: AppColors.darkCard,
+          onSurface: AppColors.darkTextPrimary,
+          error: AppColors.error,
+          onError: Colors.white,
+        ),
+        scaffoldBackground: AppColors.darkBackground,
+        appBarBackground: AppColors.darkSurface,
+        appBarForeground: AppColors.darkTextPrimary,
+        inputFill: AppColors.darkSurface,
+        inputHint: AppColors.darkTextHint,
+        lineColor: AppColors.darkDivider,
+        textPrimary: AppColors.darkTextPrimary,
+        textSecondary: AppColors.darkTextSecondary,
+      );
+
+  static ThemeData _build({
+    required ColorScheme colorScheme,
+    required Color scaffoldBackground,
+    required Color appBarBackground,
+    required Color appBarForeground,
+    required Color inputFill,
+    required Color inputHint,
+    required Color lineColor,
+    required Color textPrimary,
+    required Color textSecondary,
+  }) {
     return ThemeData(
       useMaterial3: true,
       colorScheme: colorScheme,
-      scaffoldBackgroundColor: AppColors.background,
+      scaffoldBackgroundColor: scaffoldBackground,
 
       // AppBar
-      appBarTheme: const AppBarTheme(
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
+      appBarTheme: AppBarTheme(
+        backgroundColor: appBarBackground,
+        foregroundColor: appBarForeground,
         elevation: 0,
         centerTitle: false,
         titleTextStyle: TextStyle(
-          color: Colors.white,
+          color: appBarForeground,
           fontSize: 18,
           fontWeight: FontWeight.w600,
         ),
@@ -42,7 +84,7 @@ class AppTheme {
 
       // 卡片
       cardTheme: CardThemeData(
-        color: AppColors.card,
+        color: colorScheme.surface,
         elevation: 1,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
@@ -53,21 +95,21 @@ class AppTheme {
       // 输入框
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: AppColors.secondary,
+        fillColor: inputFill,
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppColors.divider),
+          borderSide: BorderSide(color: lineColor),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: const BorderSide(color: AppColors.divider),
+          borderSide: BorderSide(color: lineColor),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
           borderSide: const BorderSide(color: AppColors.accent, width: 2),
         ),
-        hintStyle: const TextStyle(color: AppColors.textHint, fontSize: 14),
+        hintStyle: TextStyle(color: inputHint, fontSize: 14),
       ),
 
       // 按钮
@@ -95,25 +137,25 @@ class AppTheme {
       ),
 
       // 文字
-      textTheme: const TextTheme(
-        bodyLarge: TextStyle(color: AppColors.textPrimary, fontSize: 16),
-        bodyMedium: TextStyle(color: AppColors.textPrimary, fontSize: 14),
-        bodySmall: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+      textTheme: TextTheme(
+        bodyLarge: TextStyle(color: textPrimary, fontSize: 16),
+        bodyMedium: TextStyle(color: textPrimary, fontSize: 14),
+        bodySmall: TextStyle(color: textSecondary, fontSize: 12),
         titleLarge: TextStyle(
-          color: AppColors.textPrimary,
+          color: textPrimary,
           fontSize: 18,
           fontWeight: FontWeight.w600,
         ),
         titleMedium: TextStyle(
-          color: AppColors.textPrimary,
+          color: textPrimary,
           fontSize: 16,
           fontWeight: FontWeight.w600,
         ),
       ),
 
       // 分割线
-      dividerTheme: const DividerThemeData(
-        color: AppColors.divider,
+      dividerTheme: DividerThemeData(
+        color: lineColor,
         thickness: 1,
         space: 1,
       ),

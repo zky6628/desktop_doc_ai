@@ -1,0 +1,70 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// 本地偏好存取：主题模式、最后页面与窗口尺寸
+///
+/// 仅保存可重建的界面偏好；业务数据一律以后端 API 为权威。
+class AppPreferences {
+  AppPreferences._(this._prefs);
+
+  final SharedPreferences _prefs;
+
+  static const _keyThemeMode = 'ui.theme_mode';
+  static const _keyLastLocation = 'ui.last_location';
+  static const _keyWindowWidth = 'ui.window_width';
+  static const _keyWindowHeight = 'ui.window_height';
+
+  /// 默认窗口尺寸与默认进入页面
+  static const Size defaultWindowSize = Size(1280, 720);
+  static const String defaultLocation = '/chat';
+
+  /// 窗口最小尺寸（与 window_manager 初始化共用，保障紧凑档可用）
+  static const Size minWindowSize = Size(720, 560);
+
+  static Future<AppPreferences> load() async =>
+      AppPreferences._(await SharedPreferences.getInstance());
+
+  /// 主题模式；未知取值按跟随系统处理
+  ThemeMode get themeMode {
+    switch (_prefs.getString(_keyThemeMode)) {
+      case 'light':
+        return ThemeMode.light;
+      case 'dark':
+        return ThemeMode.dark;
+      default:
+        return ThemeMode.system;
+    }
+  }
+
+  /// 上次停留的页面位置；无效值由路由侧回退到默认页面
+  String get lastLocation =>
+      _prefs.getString(_keyLastLocation) ?? defaultLocation;
+
+  /// 上次窗口尺寸；未记录或记录残缺时返回默认尺寸
+  Size get windowSize {
+    final width = _prefs.getDouble(_keyWindowWidth);
+    final height = _prefs.getDouble(_keyWindowHeight);
+    if (width == null || height == null) return defaultWindowSize;
+    return Size(width, height);
+  }
+
+  Future<void> saveThemeMode(ThemeMode mode) => _prefs.setString(
+        _keyThemeMode,
+        switch (mode) {
+          ThemeMode.light => 'light',
+          ThemeMode.dark => 'dark',
+          ThemeMode.system => 'system',
+        },
+      );
+
+  Future<void> saveLastLocation(String location) =>
+      _prefs.setString(_keyLastLocation, location);
+
+  Future<void> saveWindowSize(Size size) => Future.wait([
+        _prefs.setDouble(_keyWindowWidth, size.width),
+        _prefs.setDouble(_keyWindowHeight, size.height),
+      ]);
+}
