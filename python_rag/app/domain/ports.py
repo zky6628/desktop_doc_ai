@@ -46,8 +46,26 @@ class KnowledgeBaseRepository(ABC):
         """按名称查找活动记录；不存在时返回 None"""
 
     @abstractmethod
-    def list_active(self) -> list[KnowledgeBase]:
-        """列出全部活动知识库（按创建时间倒序）"""
+    def list_active(
+        self,
+        *,
+        limit: int = 50,
+        after_created_at: str | None = None,
+        after_id: str | None = None,
+    ) -> list[KnowledgeBase]:
+        """列出活动知识库（created_at + id 倒序的 keyset 分页）
+
+        after_created_at/after_id 为上一页末行的排序键，二者必须同时
+        提供才生效；首页两者传 None。limit 上限由调用方约束
+        """
+
+    @abstractmethod
+    def rename(
+        self, kb_id: str, name: str, description: str | None
+    ) -> KnowledgeBase:
+        """重命名知识库并可更新描述；目标不存在或已删除抛
+        EntityNotFoundError；活动名称与其他知识库冲突抛
+        DuplicateActiveNameError"""
 
     @abstractmethod
     def soft_delete(self, kb_id: str) -> None:
@@ -68,8 +86,17 @@ class DocumentRepository(ABC):
         """按 ID 读取；不存在时返回 None"""
 
     @abstractmethod
-    def list_by_kb(self, kb_id: str, include_deleted: bool = False) -> list[Document]:
-        """列出知识库内文档（按创建时间倒序；默认排除已软删除）"""
+    def list_by_kb(
+        self,
+        kb_id: str,
+        include_deleted: bool = False,
+        *,
+        limit: int = 50,
+        after_created_at: str | None = None,
+        after_id: str | None = None,
+    ) -> list[Document]:
+        """列出知识库内文档（created_at + id 倒序的 keyset 分页；默认
+        排除已软删除）；排序键语义与知识库列表一致"""
 
     @abstractmethod
     def soft_delete(self, doc_id: str) -> None:
@@ -219,6 +246,13 @@ class ContentRepository(ABC):
 
         切片等下游阶段以此读取解析事实，与内存解析模型解耦。
         版本不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def delete_document_content(self, document_version_id: str) -> int:
+        """删除该版本的全部解析产物（内容块与表格证据，单事务）
+
+        物理清理链使用：引用该块的切片关联须先行删除。版本不存在
+        抛 EntityNotFoundError；返回删除的块数"""
 
 
 class PipelineConfigRepository(ABC):
@@ -689,6 +723,67 @@ class ImportRepository(ABC):
         EntityNotFoundError；队列容量不足抛 TaskQueueFullError 且
         无任何残留。"""
 
+    @abstractmethod
+    def create_replace(
+        self,
+        document_id: str,
+        *,
+        source_path: str,
+        source_sha256: str,
+        mime_type: str | None = None,
+        size_bytes: int | None = None,
+        parser_mode: str | None = None,
+        parser_route_json: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ImportOutcome:
+        """在指定文档上建立新版本并创建导入任务（替换编排）
+
+        与导入同构的单事务：目标不存在或已删除抛 EntityNotFoundError；
+        所在知识库已删除抛 KnowledgeBaseDeletedError；存在非终态任务
+        抛 TaskStateConflictError；新内容与当前活动版本相同抛
+        DuplicateActiveContentError；队列容量不足抛 TaskQueueFullError。
+        成功时文档身份列（source_sha256）随新内容更新"""
+
+    @abstractmethod
+    def create_rebuild(
+        self, document_id: str, *, idempotency_key: str | None = None
+    ) -> Task:
+        """为文档当前活动版本创建索引重建任务（组合事务）
+
+        守卫与任务创建同一事务：目标不存在或已删除抛
+        EntityNotFoundError；所属知识库已删除抛
+        KnowledgeBaseDeletedError；没有活动版本抛
+        VersionConflictError；存在非终态任务抛
+        TaskStateConflictError；队列容量不足抛 TaskQueueFullError"""
+
+
+class DeletionRepository(ABC):
+    """删除仓储：软删除与删除任务的组合事务写入
+
+    容量检查、软删除时间写入与删除任务创建必须同事务：队列满时
+    整体回滚，资源保持未删除。
+    """
+
+    @abstractmethod
+    def create_kb_deletion(
+        self, kb_id: str, *, idempotency_key: str | None = None
+    ) -> Task:
+        """软删除知识库并创建物理清理任务（delete_kb）
+
+        幂等键已存在时直接返回既有任务；知识库不存在抛
+        EntityNotFoundError；已处于删除态抛 TaskStateConflictError；
+        队列容量不足抛 TaskQueueFullError 且软删除一并回滚"""
+
+    @abstractmethod
+    def create_document_deletion(
+        self, document_id: str, *, idempotency_key: str | None = None
+    ) -> Task:
+        """软删除文档并创建物理清理任务（delete_document）
+
+        幂等键已存在时直接返回既有任务；文档不存在或已删除抛
+        EntityNotFoundError；存在非终态任务抛 TaskStateConflictError；
+        队列容量不足抛 TaskQueueFullError 且软删除一并回滚"""
+
 
 class ExternalTaskRepository(ABC):
     """外部任务仓储：云端批次关联与轮询事实的持久化
@@ -806,6 +901,16 @@ class TaskRepository(ABC):
 
         补偿清理的守卫依据：存在在途任务时其文档版本的 staging
         索引可能被续跑复用，不得清理"""
+
+    @abstractmethod
+    def count_non_terminal_by_document(self, document_id: str) -> int:
+        """统计引用该文档且尚未进入终态的任务数（替换/重建/删除的
+        在途守卫）；目标不存在返回 0"""
+
+    @abstractmethod
+    def list_by_document(self, document_id: str, limit: int = 5) -> list[Task]:
+        """按创建时间倒序列出引用该文档的最近任务（文档详情页的
+        任务历史）；目标不存在返回空列表"""
 
     @abstractmethod
     def claim_next(

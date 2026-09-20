@@ -334,6 +334,26 @@ class SQLiteTaskRepository(TaskRepositoryPort):
         ).fetchone()
         return row[0]
 
+    def count_non_terminal_by_document(self, document_id: str) -> int:
+        """统计引用该文档的非终态任务数（方法契约见领域 Port 定义）"""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM tasks"
+            " WHERE document_id = ?"
+            f" AND state IN ({_PENDING_STATE_PLACEHOLDERS})",
+            (document_id, *_PENDING_STATE_VALUES),
+        ).fetchone()
+        return row[0]
+
+    def list_by_document(self, document_id: str, limit: int = 5) -> list[Task]:
+        """按创建时间倒序列出引用该文档的最近任务（方法契约见领域 Port 定义）"""
+        rows = self._conn.execute(
+            f"SELECT {_TASK_COLUMNS} FROM tasks"
+            " WHERE document_id = ?"
+            " ORDER BY created_at DESC, id DESC LIMIT ?",
+            (document_id, limit),
+        ).fetchall()
+        return [self._to_entity(row) for row in rows]
+
     def claim_next(
         self, worker_id: str, task_type: str | None = None
     ) -> Task | None:

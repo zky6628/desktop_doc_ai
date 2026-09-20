@@ -5,6 +5,7 @@ from .citation_repository import SQLiteCitationRepository
 from .config_repository import SQLiteConfigRepository
 from .content_repository import SQLiteContentRepository
 from .conversation_repository import SQLiteConversationRepository
+from .deletion_repository import SQLiteDeletionRepository
 from .document_repository import SQLiteDocumentRepository
 from .document_version_repository import SQLiteDocumentVersionRepository
 from .external_task_repository import SQLiteExternalTaskRepository
@@ -20,6 +21,7 @@ __all__ = [
     "SQLiteConfigRepository",
     "SQLiteContentRepository",
     "SQLiteConversationRepository",
+    "SQLiteDeletionRepository",
     "SQLiteDocumentRepository",
     "SQLiteDocumentVersionRepository",
     "SQLiteExternalTaskRepository",

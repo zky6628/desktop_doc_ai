@@ -165,6 +165,15 @@ class IndexHealthService:
             unexpected_namespaces=unexpected_namespaces,
         )
 
+    def check_knowledge_base(self, kb_id: str) -> tuple[IndexHealthFinding, ...]:
+        """检查指定知识库的活动索引（KB 级健康检查任务使用）
+
+        只比对活动索引与切片事实，不做全库孤儿扫描（孤儿清洁度属于
+        全量清扫职责）；知识库无可检索索引时返回空元组
+        """
+        indexes = self._index_repo.list_active_by_knowledge_base(kb_id)
+        return tuple(self._check_index(index) for index in indexes)
+
     def _check_index(self, index: IndexVersion) -> IndexHealthFinding:
         """比对单个活动索引与切片事实"""
         issues: list[str] = []

@@ -22,6 +22,10 @@ class DuplicateActiveContentError(RepositoryError):
     """活动状态下内容哈希唯一约束冲突"""
 
 
+class KnowledgeBaseDeletedError(RepositoryError):
+    """目标资源所属知识库已删除（写操作按 410 表达）"""
+
+
 class ActivationError(RepositoryError):
     """版本激活事务校验失败（状态不允许激活或双向一致性无法满足）"""
 
@@ -32,6 +36,10 @@ class TaskQueueFullError(RepositoryError):
 
 class TaskStateConflictError(RepositoryError):
     """任务状态迁移不被状态机允许（含终态再迁移与自迁移）"""
+
+
+class VersionConflictError(RepositoryError):
+    """版本前提不满足（如文档没有可操作的活动版本）"""
 
 
 class TaskLeaseLostError(RepositoryError):

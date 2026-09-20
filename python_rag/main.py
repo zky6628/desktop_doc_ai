@@ -179,6 +179,8 @@ from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXT
 import chromadb
 from app.api.v1 import (
     ApiV1Dependencies,
+    DocumentDependencies,
+    KnowledgeBaseDependencies,
     MetricsDependencies,
     QueryDependencies,
     create_api_router,
@@ -201,6 +203,7 @@ from app.infrastructure.sqlite.repositories import (
     SQLiteConfigRepository,
     SQLiteContentRepository,
     SQLiteConversationRepository,
+    SQLiteDeletionRepository,
     SQLiteDocumentRepository,
     SQLiteDocumentVersionRepository,
     SQLiteExternalTaskRepository,
@@ -790,6 +793,22 @@ app.include_router(
             query=_query_deps,
             metrics=MetricsDependencies(
                 run_repo=_query_run_repo, conn=_workbench_conn
+            ),
+            knowledge_bases=KnowledgeBaseDependencies(
+                kb_repo=SQLiteKnowledgeBaseRepository(_workbench_conn),
+                deletion_repo=SQLiteDeletionRepository(_workbench_conn),
+                task_repo=_workbench_task_repo,
+            ),
+            documents=DocumentDependencies(
+                orchestrator=_workbench_orchestrator,
+                kb_repo=SQLiteKnowledgeBaseRepository(_workbench_conn),
+                document_repo=SQLiteDocumentRepository(_workbench_conn),
+                version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
+                index_repo=SQLiteIndexVersionRepository(_workbench_conn),
+                content_repo=SQLiteContentRepository(_workbench_conn),
+                task_repo=_workbench_task_repo,
+                deletion_repo=SQLiteDeletionRepository(_workbench_conn),
+                import_repo=SQLiteImportRepository(_workbench_conn),
             ),
         )
     )

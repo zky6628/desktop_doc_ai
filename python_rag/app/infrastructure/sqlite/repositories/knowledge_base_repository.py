@@ -67,14 +67,60 @@ class SQLiteKnowledgeBaseRepository(KnowledgeBaseRepositoryPort):
         ).fetchone()
         return self._to_entity(row) if row is not None else None
 
-    def list_active(self) -> list:
-        rows = self._conn.execute(
+    def list_active(
+        self,
+        *,
+        limit: int = 50,
+        after_created_at: str | None = None,
+        after_id: str | None = None,
+    ) -> list:
+        sql = (
             "SELECT id, name, description, status, deleted_at, delete_requested_at,"
             " created_at, updated_at"
             " FROM knowledge_bases WHERE deleted_at IS NULL"
-            " ORDER BY created_at DESC, id"
-        ).fetchall()
+        )
+        params: list[str | int] = []
+        if after_created_at is not None and after_id is not None:
+            # keyset 分页：(created_at, id) 倒序下，游标行之后意味着
+            # 排序键严格小于游标（created_at 较小，或相同但 id 较小）
+            sql += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            params.extend([after_created_at, after_created_at, after_id])
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
         return [self._to_entity(row) for row in rows]
+
+    def rename(
+        self, kb_id: str, name: str, description: str | None
+    ) -> KnowledgeBase:
+        def _rename(conn) -> KnowledgeBase:
+            row = conn.execute(
+                "SELECT deleted_at FROM knowledge_bases WHERE id = ?", (kb_id,)
+            ).fetchone()
+            if row is None or row[0] is not None:
+                raise EntityNotFoundError(f"知识库不存在或已删除: {kb_id}")
+            duplicate = conn.execute(
+                "SELECT 1 FROM knowledge_bases"
+                " WHERE name = ? AND deleted_at IS NULL AND id != ?",
+                (name, kb_id),
+            ).fetchone()
+            if duplicate is not None:
+                raise DuplicateActiveNameError(f"活动知识库名称已存在: {name}")
+            now = utc_now_iso()
+            conn.execute(
+                "UPDATE knowledge_bases"
+                " SET name = ?, description = ?, updated_at = ? WHERE id = ?",
+                (name, description, now, kb_id),
+            )
+            updated = conn.execute(
+                "SELECT id, name, description, status, deleted_at,"
+                " delete_requested_at, created_at, updated_at"
+                " FROM knowledge_bases WHERE id = ?",
+                (kb_id,),
+            ).fetchone()
+            return self._to_entity(updated)
+
+        return run_in_transaction(self._conn, _rename, f"重命名知识库 {kb_id}")
 
     def soft_delete(self, kb_id: str) -> None:
         def _soft_delete(conn) -> None:

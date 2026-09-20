@@ -70,16 +70,29 @@ class SQLiteDocumentRepository(DocumentRepositoryPort):
         ).fetchone()
         return self._to_entity(row) if row is not None else None
 
-    def list_by_kb(self, kb_id: str, include_deleted: bool = False) -> list:
+    def list_by_kb(
+        self,
+        kb_id: str,
+        include_deleted: bool = False,
+        *,
+        limit: int = 50,
+        after_created_at: str | None = None,
+        after_id: str | None = None,
+    ) -> list:
         sql = (
             "SELECT id, knowledge_base_id, display_name, source_sha256, status,"
             " active_document_version_id, deleted_at, delete_requested_at, created_at, updated_at"
             " FROM documents WHERE knowledge_base_id = ?"
         )
+        params: list[str | int] = [kb_id]
         if not include_deleted:
             sql += " AND deleted_at IS NULL"
-        sql += " ORDER BY created_at DESC, id"
-        rows = self._conn.execute(sql, (kb_id,)).fetchall()
+        if after_created_at is not None and after_id is not None:
+            sql += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            params.extend([after_created_at, after_created_at, after_id])
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
         return [self._to_entity(row) for row in rows]
 
     def soft_delete(self, doc_id: str) -> None:

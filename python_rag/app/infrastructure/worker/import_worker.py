@@ -58,7 +58,11 @@ from app.domain.errors import (
     TaskStateConflictError,
     UnsupportedFormatError,
 )
-from app.domain.index_maintenance import collection_name, fts_namespace_name
+from app.domain.index_maintenance import (
+    IndexHealthService,
+    collection_name,
+    fts_namespace_name,
+)
 from app.domain.keyword import KeywordDocument
 from app.domain.parsing import ParsedDocument
 from app.domain.ports import (
@@ -76,7 +80,7 @@ from app.domain.ports import (
     VectorIndexGateway,
 )
 from app.domain.task_state import HEARTBEAT_INTERVAL_SECONDS
-from app.infrastructure.maintenance import IndexCleanupService
+from app.infrastructure.maintenance import DeletionService, IndexCleanupService
 from app.infrastructure.mineru import (
     MinerUClient,
     normalize_archive,
@@ -259,6 +263,23 @@ class ImportTaskWorker:
             keyword_index=keyword_index,
             work_dir=work_dir,
         )
+        # 删除任务的物理清理执行器与 KB 级健康检查（复用既有依赖，
+        # 删除/检查不引入新的外部交互）
+        self._deletion = DeletionService(
+            document_repo=document_repo,
+            version_repo=version_repo,
+            content_repo=content_repo,
+            chunk_repo=chunk_repo,
+            index_repo=index_repo,
+            vector_index=vector_index,
+            keyword_index=keyword_index,
+        )
+        self._health = IndexHealthService(
+            index_repo=index_repo,
+            chunk_repo=chunk_repo,
+            vector_index=vector_index,
+            keyword_index=keyword_index,
+        )
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -405,6 +426,15 @@ class ImportTaskWorker:
         if task.task_type == "rebuild_index":
             self._run_rebuild(task)
             return
+        if task.task_type == "delete_kb":
+            self._run_delete_kb(task)
+            return
+        if task.task_type == "delete_document":
+            self._run_delete_document(task)
+            return
+        if task.task_type == "health_check":
+            self._run_health_check(task)
+            return
         if task.task_type != "import":
             raise RuntimeError(f"不支持的任务类型: {task.task_type}")
         stage = task.stage
@@ -535,6 +565,89 @@ class ImportTaskWorker:
         索引验证通过前不触碰既有活动索引，任何失败零损伤
         """
         self._run_chunking(task, self._require_version(task))
+
+    def _run_delete_kb(self, task: Task) -> None:
+        """知识库删除：物理清理库内全部文档的派生资产"""
+        if task.knowledge_base_id is None:
+            raise RuntimeError(f"任务缺少知识库引用: {task.id}")
+        kb_id = task.knowledge_base_id
+        self._run_deletion(
+            task, lambda: self._deletion.cleanup_knowledge_base(kb_id)
+        )
+
+    def _run_delete_document(self, task: Task) -> None:
+        """文档删除：物理清理该文档的派生资产"""
+        if task.document_id is None:
+            raise RuntimeError(f"任务缺少文档引用: {task.id}")
+        document_id = task.document_id
+        self._run_deletion(
+            task, lambda: [self._deletion.cleanup_document(document_id)]
+        )
+
+    def _run_deletion(self, task: Task, cleanup) -> None:
+        """删除任务公共路径：清理 -> 审计摘要 -> 成功或按瞬态重试
+
+        文件系统层不可删除项按瞬态处理（退避自动重试，重试预算由
+        任务引擎统一定义）；派生索引清理异常按任务边界兜底转失败
+        """
+        self._set_stage(task.id, TaskStage.CLEANING_UP)
+        outcomes = cleanup()
+        failure_paths = [
+            path for outcome in outcomes for path in outcome.failures
+        ]
+        summary = {
+            "documents": len(outcomes),
+            "removed_files": sum(o.removed_files for o in outcomes),
+            "removed_blocks": sum(o.removed_blocks for o in outcomes),
+            "cleaned_indexes": sum(o.cleaned_indexes for o in outcomes),
+            "failures": list(failure_paths),
+        }
+        self._task_repo.append_event(
+            task.id,
+            "deletion_summary",
+            detail_json=json.dumps(summary, ensure_ascii=False, separators=(",", ":")),
+        )
+        if not failure_paths:
+            self._succeed(task.id)
+            return
+        self._retry(
+            task.id,
+            "CLEANUP_TRANSIENT",
+            f"{len(failure_paths)} 项清理目标暂不可删除",
+        )
+
+    def _run_health_check(self, task: Task) -> None:
+        """知识库健康检查：比对活动索引与切片事实并落审计摘要
+
+        检查任务以产出结论为完成标准：发现不健康项不视为任务失败
+        （结论由事件承载，供任务中心与知识库页展示）
+        """
+        if task.knowledge_base_id is None:
+            raise RuntimeError(f"任务缺少知识库引用: {task.id}")
+        self._set_stage(task.id, TaskStage.VALIDATING_INDEX)
+        findings = self._health.check_knowledge_base(task.knowledge_base_id)
+        summary = {
+            "healthy": all(finding.healthy for finding in findings),
+            "checked": len(findings),
+            "findings": [
+                {
+                    "index_version_id": finding.index_version_id,
+                    "document_version_id": finding.document_version_id,
+                    "healthy": finding.healthy,
+                    "issues": list(finding.issues),
+                    "expected_child_count": finding.expected_child_count,
+                    "actual_vector_count": finding.actual_vector_count,
+                    "actual_keyword_count": finding.actual_keyword_count,
+                }
+                for finding in findings
+            ],
+        }
+        self._task_repo.append_event(
+            task.id,
+            "health_summary",
+            detail_json=json.dumps(summary, ensure_ascii=False, separators=(",", ":")),
+        )
+        self._succeed(task.id)
 
     def _run_cloud(self, task: Task) -> None:
         """云端路线：提交（或恢复既有批次）-> 轮询 -> 转下载阶段"""

@@ -12,6 +12,9 @@ from app.domain.entities import DocumentStatus, Task, TaskStage, TaskStatus
 from app.domain.errors import (
     DuplicateActiveContentError,
     EntityNotFoundError,
+    KnowledgeBaseDeletedError,
+    TaskStateConflictError,
+    VersionConflictError,
 )
 from app.domain.ids import uuid7
 from app.domain.ingest import DuplicatePolicy, ImportOutcome
@@ -19,6 +22,8 @@ from app.domain.ports import ImportRepository as ImportRepositoryPort
 
 from ..transactions import run_in_transaction
 from .task_repository import (
+    _PENDING_STATE_PLACEHOLDERS,
+    _PENDING_STATE_VALUES,
     ensure_queue_capacity,
     insert_task_event,
 )
@@ -225,4 +230,233 @@ class SQLiteImportRepository(ImportRepositoryPort):
             self._conn,
             _import,
             f"导入文件 {display_name} 到知识库 {kb_id}",
+        )
+
+    def create_replace(
+        self,
+        document_id: str,
+        *,
+        source_path: str,
+        source_sha256: str,
+        mime_type: str | None = None,
+        size_bytes: int | None = None,
+        parser_mode: str | None = None,
+        parser_route_json: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ImportOutcome:
+        """在指定文档上建立替换版本（方法契约见领域 Port 定义）"""
+
+        def _replace(conn) -> ImportOutcome:
+            # 幂等重放优先于一切写入：同键命中直接返回既有任务
+            if idempotency_key is not None:
+                existing = conn.execute(
+                    f"SELECT {_TASK_COLUMNS} FROM tasks WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None:
+                    return ImportOutcome(
+                        document_id=existing[3],
+                        document_version_id=existing[4],
+                        task=_task_from_row(existing),
+                        reused_existing_document=True,
+                    )
+
+            row = conn.execute(
+                "SELECT d.id, d.knowledge_base_id, d.deleted_at,"
+                "       d.active_document_version_id, kb.deleted_at"
+                " FROM documents d"
+                " JOIN knowledge_bases kb ON kb.id = d.knowledge_base_id"
+                " WHERE d.id = ?",
+                (document_id,),
+            ).fetchone()
+            if row is None or row[2] is not None:
+                raise EntityNotFoundError(f"文档不存在或已删除: {document_id}")
+            if row[4] is not None:
+                raise KnowledgeBaseDeletedError(
+                    f"文档所属知识库已删除: {row[1]}"
+                )
+
+            # 在途守卫：替换叠加在导入/重建等未完成任务上会让版本演化
+            # 不可追溯，直接以状态冲突拒绝
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM tasks"
+                " WHERE document_id = ?"
+                f" AND state IN ({_PENDING_STATE_PLACEHOLDERS})",
+                (document_id, *_PENDING_STATE_VALUES),
+            ).fetchone()[0]
+            if pending > 0:
+                raise TaskStateConflictError(
+                    f"文档存在 {pending} 个未完成任务，暂不能替换"
+                )
+
+            # 同内容守卫：与当前活动版本内容相同没有替换意义（显式
+            # 拒绝而非静默成功，避免产生无变化的版本历史）
+            if row[3] is not None:
+                active_sha = conn.execute(
+                    "SELECT source_sha256 FROM document_versions WHERE id = ?",
+                    (row[3],),
+                ).fetchone()
+                if active_sha is not None and active_sha[0] == source_sha256:
+                    raise DuplicateActiveContentError(
+                        "新文件与当前活动版本内容相同"
+                    )
+
+            now = utc_now_iso()
+            next_no = conn.execute(
+                "SELECT COALESCE(MAX(version_no), 0) + 1 FROM document_versions"
+                " WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()[0]
+            version_id = uuid7()
+            conn.execute(
+                "INSERT INTO document_versions"
+                " (id, document_id, version_no, source_path, source_sha256, mime_type,"
+                "  size_bytes, parser_mode, parser_provider, parser_version,"
+                "  parsed_content_sha256, status, active_index_version_id, created_at,"
+                "  activated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, NULL, ?, NULL)",
+                (
+                    version_id, document_id, next_no, source_path, source_sha256,
+                    mime_type, size_bytes, parser_mode,
+                    _VERSION_STATUS_PENDING, now,
+                ),
+            )
+            # 文档身份列跟随新内容：后续导入去重按新哈希判定
+            conn.execute(
+                "UPDATE documents SET source_sha256 = ?, updated_at = ?"
+                " WHERE id = ?",
+                (source_sha256, now, document_id),
+            )
+            ensure_queue_capacity(conn)
+
+            task_id = uuid7()
+            conn.execute(
+                "INSERT INTO tasks"
+                " (id, task_type, knowledge_base_id, document_id, document_version_id,"
+                "  index_version_id, state, stage, progress, priority, idempotency_key,"
+                "  retry_count, max_retries, attempt_count, stage_attempt,"
+                "  total_attempt_count, next_retry_at, lease_owner, lease_expires_at,"
+                "  heartbeat_at, cancel_requested_at, checkpoint_json, parent_task_id,"
+                "  retry_origin, error_code, error_message, input_json,"
+                "  created_at, started_at, finished_at)"
+                " VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, 0, 0, ?, 0, 3, 0, 0, 0,"
+                "  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?,"
+                "  ?, NULL, NULL)",
+                (
+                    task_id, "import", row[1], document_id, version_id,
+                    TaskStatus.QUEUED.value, idempotency_key,
+                    parser_route_json, now,
+                ),
+            )
+            insert_task_event(
+                conn,
+                task_id=task_id,
+                event_type=_EVENT_CREATED,
+                state=TaskStatus.QUEUED,
+                stage=None,
+                attempt_count=0,
+                worker=None,
+                created_at=now,
+            )
+            task_row = conn.execute(
+                f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            return ImportOutcome(
+                document_id=document_id,
+                document_version_id=version_id,
+                task=_task_from_row(task_row),
+                reused_existing_document=False,
+            )
+
+        return run_in_transaction(
+            self._conn,
+            _replace,
+            f"替换文档 {document_id} 的内容",
+        )
+
+    def create_rebuild(
+        self, document_id: str, *, idempotency_key: str | None = None
+    ) -> Task:
+        """为文档活动版本创建重建任务（方法契约见领域 Port 定义）"""
+
+        def _rebuild(conn) -> Task:
+            # 幂等重放优先于一切写入：同键命中直接返回既有任务
+            if idempotency_key is not None:
+                existing = conn.execute(
+                    f"SELECT {_TASK_COLUMNS} FROM tasks WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None:
+                    return _task_from_row(existing)
+
+            row = conn.execute(
+                "SELECT d.id, d.knowledge_base_id, d.deleted_at,"
+                "       d.active_document_version_id, kb.deleted_at"
+                " FROM documents d"
+                " JOIN knowledge_bases kb ON kb.id = d.knowledge_base_id"
+                " WHERE d.id = ?",
+                (document_id,),
+            ).fetchone()
+            if row is None or row[2] is not None:
+                raise EntityNotFoundError(f"文档不存在或已删除: {document_id}")
+            if row[4] is not None:
+                raise KnowledgeBaseDeletedError(
+                    f"文档所属知识库已删除: {row[1]}"
+                )
+            if row[3] is None:
+                raise VersionConflictError("文档没有可重建的活动版本")
+
+            # 在途守卫与任务创建同事务：重建与替换/删除/导入互斥由
+            # 这里一次性裁定，消除端点预检与写入之间的竞态窗口
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM tasks"
+                " WHERE document_id = ?"
+                f" AND state IN ({_PENDING_STATE_PLACEHOLDERS})",
+                (document_id, *_PENDING_STATE_VALUES),
+            ).fetchone()[0]
+            if pending > 0:
+                raise TaskStateConflictError(
+                    f"文档存在 {pending} 个未完成任务，暂不能重建"
+                )
+
+            ensure_queue_capacity(conn)
+
+            now = utc_now_iso()
+            task_id = uuid7()
+            conn.execute(
+                "INSERT INTO tasks"
+                " (id, task_type, knowledge_base_id, document_id, document_version_id,"
+                "  index_version_id, state, stage, progress, priority, idempotency_key,"
+                "  retry_count, max_retries, attempt_count, stage_attempt,"
+                "  total_attempt_count, next_retry_at, lease_owner, lease_expires_at,"
+                "  heartbeat_at, cancel_requested_at, checkpoint_json, parent_task_id,"
+                "  retry_origin, error_code, error_message, input_json,"
+                "  created_at, started_at, finished_at)"
+                " VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, 0, 0, ?, 0, 3, 0, 0, 0,"
+                "  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,"
+                "  ?, NULL, NULL)",
+                (
+                    task_id, "rebuild_index", row[1], document_id, row[3],
+                    TaskStatus.QUEUED.value, idempotency_key, now,
+                ),
+            )
+            insert_task_event(
+                conn,
+                task_id=task_id,
+                event_type=_EVENT_CREATED,
+                state=TaskStatus.QUEUED,
+                stage=None,
+                attempt_count=0,
+                worker=None,
+                created_at=now,
+            )
+            task_row = conn.execute(
+                f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            return _task_from_row(task_row)
+
+        return run_in_transaction(
+            self._conn,
+            _rebuild,
+            f"重建文档 {document_id} 的索引",
         )

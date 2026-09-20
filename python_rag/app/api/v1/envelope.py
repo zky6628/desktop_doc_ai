@@ -5,8 +5,11 @@
 日志与问题排查关联）；错误响应额外提供可重试性标注。任务序列化
 输出接口层最小 TaskDTO 字段集。
 """
-from app.domain.entities import Task
+from app.domain.entities import Task, TaskStatus
 from app.domain.ids import uuid7
+
+# 任务终态：非终态任务可请求取消，仅失败任务可手动重试
+_TERMINAL_STATES = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 
 
 def new_request_id() -> str:
@@ -45,13 +48,16 @@ def error_envelope(
     }
 
 
-def serialize_task(task: Task) -> dict:
+def serialize_task(task: Task, *, queue_position: int | None = None) -> dict:
     """把任务实体序列化为接口层最小 TaskDTO
 
-    取消/重试能力标注随任务中心端点一并补充；错误信息已在产生侧
-    完成脱敏，此处原样透出。
+    取消/重试能力标注由任务状态推导：非终态可取消（取消请求幂等），
+    仅失败任务可手动重试；queue_position 由调用方按队列口径计算后
+    传入（非排队状态为 None）。错误信息已在产生侧完成脱敏，此处
+    原样透出。
 
     :param task: 任务实体
+    :param queue_position: 队列位次（queued 状态专用）
     :return: TaskDTO 字典
     """
     return {
@@ -60,6 +66,9 @@ def serialize_task(task: Task) -> dict:
         "state": task.state.value,
         "stage": task.stage.value if task.stage is not None else None,
         "progress": task.progress,
+        "queue_position": queue_position,
+        "cancellable": task.state not in _TERMINAL_STATES,
+        "retryable": task.state is TaskStatus.FAILED,
         "retry_count": task.retry_count,
         "stage_attempt": task.stage_attempt,
         "total_attempt_count": task.total_attempt_count,

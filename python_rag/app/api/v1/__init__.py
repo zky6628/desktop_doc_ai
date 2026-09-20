@@ -26,7 +26,13 @@ from app.infrastructure.ingest import (
     confirm_cloud_parsing,
 )
 
+from .documents import DocumentDependencies, create_documents_router
 from .envelope import error_envelope, new_request_id, serialize_task, success_envelope
+from .files import chunk_file_reader
+from .knowledge_bases import (
+    KnowledgeBaseDependencies,
+    create_knowledge_bases_router,
+)
 from .metrics import MetricsDependencies, create_metrics_router
 from .queries import QueryDependencies, create_query_router
 
@@ -34,27 +40,20 @@ from .queries import QueryDependencies, create_query_router
 _MAX_BATCH_FILES = file_policy.MAX_BATCH_FILES
 
 
-def _chunk_reader(fp, chunk_size: int):
-    """把同步文件对象包装为按块读取的字节迭代器
-
-    :param fp: 已定位到起始位置的二进制文件对象（Starlette 暂存文件）
-    :param chunk_size: 块大小（字节）
-    :return: 读到文件末尾（空块）即停止的迭代器
-    """
-    return iter(lambda: fp.read(chunk_size), b"")
-
-
 @dataclass(frozen=True)
 class ApiV1Dependencies:
     """v1 端点依赖：由应用装配（或测试）构造
 
-    query 为查询端点依赖（未装配时查询路由不注册）
+    query 为查询端点依赖（未装配时查询路由不注册）；kb/documents
+    为知识库与文档端点依赖（未装配时对应路由不注册）
     """
 
     orchestrator: ImportOrchestrator
     task_repo: TaskRepository
     query: QueryDependencies | None = None
     metrics: MetricsDependencies | None = None
+    knowledge_bases: KnowledgeBaseDependencies | None = None
+    documents: DocumentDependencies | None = None
 
 
 class CloudConfirmationRequest(BaseModel):
@@ -75,6 +74,12 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
         router.include_router(create_query_router(deps.query))
     if deps.metrics is not None:
         router.include_router(create_metrics_router(deps.metrics))
+    if deps.knowledge_bases is not None:
+        router.include_router(
+            create_knowledge_bases_router(deps.knowledge_bases)
+        )
+    if deps.documents is not None:
+        router.include_router(create_documents_router(deps.documents))
 
     @router.post("/knowledge-bases/{kb_id}/documents")
     def upload_documents(
@@ -122,7 +127,7 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
             ImportFileInput(
                 display_name=file.filename or "",
                 declared_mime=file.content_type,
-                chunks=_chunk_reader(
+                chunks=chunk_file_reader(
                     file.file, file_policy.STREAM_CHUNK_BYTES
                 ),
                 idempotency_key=(
@@ -210,9 +215,13 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
 __all__ = [
     "ApiV1Dependencies",
     "CloudConfirmationRequest",
+    "DocumentDependencies",
+    "KnowledgeBaseDependencies",
     "MetricsDependencies",
     "QueryDependencies",
     "create_api_router",
+    "create_documents_router",
+    "create_knowledge_bases_router",
     "create_metrics_router",
     "create_query_router",
 ]

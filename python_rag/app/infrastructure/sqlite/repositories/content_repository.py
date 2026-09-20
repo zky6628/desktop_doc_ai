@@ -87,6 +87,35 @@ class SQLiteContentRepository(ContentRepositoryPort):
             f"重建文档版本 {document_version_id} 的解析内容",
         )
 
+    def delete_document_content(self, document_version_id: str) -> int:
+        """删除版本的解析产物（方法契约见领域 Port 定义）"""
+
+        def _delete(conn) -> int:
+            exists = conn.execute(
+                "SELECT 1 FROM document_versions WHERE id = ?",
+                (document_version_id,),
+            ).fetchone()
+            if exists is None:
+                raise EntityNotFoundError(f"文档版本不存在: {document_version_id}")
+            # 先删扩展证据再删块：tables.block_id 引用 content_blocks，
+            # 删除顺序保证外键约束始终满足
+            conn.execute(
+                "DELETE FROM tables WHERE block_id IN"
+                " (SELECT id FROM content_blocks WHERE document_version_id = ?)",
+                (document_version_id,),
+            )
+            cursor = conn.execute(
+                "DELETE FROM content_blocks WHERE document_version_id = ?",
+                (document_version_id,),
+            )
+            return cursor.rowcount
+
+        return run_in_transaction(
+            self._conn,
+            _delete,
+            f"删除文档版本 {document_version_id} 的解析内容",
+        )
+
     def list_document_blocks(self, document_version_id: str) -> list[StoredBlock]:
         """按序号升序读取已落库解析块（方法契约见领域 Port 定义）"""
         exists = self._conn.execute(

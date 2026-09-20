@@ -16,8 +16,10 @@ from app.domain.errors import (
     EntityNotFoundError,
     FileTooLargeError,
     InsufficientDiskSpaceError,
+    KnowledgeBaseDeletedError,
     PathUnsafeError,
     TaskQueueFullError,
+    TaskStateConflictError,
     UnsupportedFormatError,
 )
 from app.domain.ports import ImportRepository
@@ -34,6 +36,14 @@ _STAGING_ERROR_CODES = {
 
 _IMPORT_ERROR_CODES = {
     EntityNotFoundError: "KNOWLEDGE_BASE_NOT_FOUND",
+    DuplicateActiveContentError: "DUPLICATE_FILE",
+    TaskQueueFullError: "TASK_QUEUE_FULL",
+}
+
+_REPLACE_ERROR_CODES = {
+    EntityNotFoundError: "DOCUMENT_NOT_FOUND",
+    KnowledgeBaseDeletedError: "KNOWLEDGE_BASE_DELETED",
+    TaskStateConflictError: "TASK_STATE_CONFLICT",
     DuplicateActiveContentError: "DUPLICATE_FILE",
     TaskQueueFullError: "TASK_QUEUE_FULL",
 }
@@ -111,6 +121,62 @@ class ImportOrchestrator:
             self._import_one(kb_id, item, duplicate_policy, parser_preference)
             for item in files
         ]
+
+    def replace_document(
+        self,
+        document_id: str,
+        item: ImportFileInput,
+        *,
+        parser_preference: str = "auto",
+    ) -> FileImportResult:
+        """替换指定文档内容：暂存、路由后在目标文档上建立新版本
+
+        替换复用导入管线：新版本以普通导入任务走解析/切片/索引/激活，
+        新索引激活前旧活动版本继续服务。错误按替换语义映射
+        （DOCUMENT_NOT_FOUND / KNOWLEDGE_BASE_DELETED / TASK_STATE_CONFLICT /
+        DUPLICATE_FILE / TASK_QUEUE_FULL）
+
+        :param document_id: 目标文档 ID
+        :param item: 新文件输入（流式暂存）
+        :param parser_preference: 解析偏好（auto/local/mineru）
+        :return: 替换结果（接受或拒绝）
+        """
+        try:
+            staged = self._staging.stage(
+                item.chunks, item.display_name, item.declared_mime
+            )
+        except tuple(_STAGING_ERROR_CODES) as exc:
+            return FileImportResult.rejected(
+                item.display_name, _STAGING_ERROR_CODES[type(exc)], str(exc)
+            )
+
+        route = parser_routing.decide_parser_route(staged.extension, parser_preference)
+        try:
+            outcome = self._imports.create_replace(
+                document_id,
+                source_path=staged.staging_path,
+                source_sha256=staged.sha256,
+                mime_type=staged.mime_type,
+                size_bytes=staged.size_bytes,
+                parser_mode=route.mode.value,
+                parser_route_json=_serialize_route(route, parser_preference),
+                idempotency_key=item.idempotency_key,
+            )
+        except tuple(_REPLACE_ERROR_CODES) as exc:
+            return FileImportResult.rejected(
+                item.display_name, _REPLACE_ERROR_CODES[type(exc)], str(exc)
+            )
+
+        return FileImportResult(
+            display_name=item.display_name,
+            accepted=True,
+            document_id=outcome.document_id,
+            document_version_id=outcome.document_version_id,
+            task_id=outcome.task.id,
+            task_state=outcome.task.state.value,
+            route_mode=route.mode.value,
+            route_reason=route.reason,
+        )
 
     def _import_one(
         self,
