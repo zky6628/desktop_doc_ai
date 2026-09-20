@@ -150,6 +150,31 @@ class QueryRun:
 
 
 @dataclass(frozen=True)
+class ConversationSummary:
+    """会话摘要：会话列表的事实（含最后一条消息摘要）"""
+
+    id: str
+    knowledge_base_id: str
+    title: str | None
+    created_at: str
+    updated_at: str
+    last_message_role: str | None
+    last_message_excerpt: str | None
+    last_message_created_at: str | None
+
+
+@dataclass(frozen=True)
+class ConversationMessage:
+    """会话消息：历史会话展示的事实"""
+
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    created_at: str
+
+
+@dataclass(frozen=True)
 class QueryEvent:
     """查询事件：SSE 事实（token 批次过期后不再回放）"""
 

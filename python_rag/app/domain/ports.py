@@ -11,6 +11,8 @@ from collections.abc import Iterator, Sequence
 from .chunking import Chunk, StoredBlock, StoredChunk
 from .citation import CitationRecord
 from .entities import (
+    ConversationMessage,
+    ConversationSummary,
     Document,
     DocumentVersion,
     ExternalTask,
@@ -514,7 +516,7 @@ class QueryEventStore(ABC):
 
 
 class ConversationRepository(ABC):
-    """会话仓储：查询链路的会话与消息事实（v1 最小面）"""
+    """会话仓储：查询链路的会话与消息事实"""
 
     @abstractmethod
     def ensure_conversation(self, kb_id: str, conversation_id: str | None) -> str:
@@ -528,6 +530,33 @@ class ConversationRepository(ABC):
     @abstractmethod
     def get_message_content(self, message_id: str) -> str | None:
         """按主键读取消息正文；不存在返回 None（最终答案聚合用）"""
+
+    @abstractmethod
+    def list_by_knowledge_base(
+        self,
+        kb_id: str,
+        *,
+        limit: int = 50,
+        after_updated_at: str | None = None,
+        after_id: str | None = None,
+    ) -> list[ConversationSummary]:
+        """列出知识库内会话（updated_at + id 倒序的 keyset 分页，最近
+        活跃优先），含最后一条消息摘要（无消息时摘要字段为 None）
+
+        after_updated_at/after_id 为上一页末行的排序键，二者必须同时
+        提供才生效；首页两者传 None。limit 上限由调用方约束
+        """
+
+    @abstractmethod
+    def list_messages(self, conversation_id: str) -> list[ConversationMessage]:
+        """按创建时间升序读取会话全部消息（同刻消息按主键序保持
+        写入顺序）；会话不存在抛 EntityNotFoundError"""
+
+    @abstractmethod
+    def delete(self, conversation_id: str) -> None:
+        """删除会话：消息与引用快照经级联清除，查询运行的会话/消息
+        关联列由存储层置空（查询指标事实保留）；会话不存在抛
+        EntityNotFoundError"""
 
 
 class ChunkRepository(ABC):

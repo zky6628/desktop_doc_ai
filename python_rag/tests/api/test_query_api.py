@@ -187,7 +187,7 @@ def _wait_terminal(client, query_id, timeout=10.0):
 
 
 def test_create_query_returns_202_with_stream_url(runtime):
-    """创建查询返回 202：query_id + 流地址 + queued 状态与统一信封"""
+    """创建查询返回 202：query_id + 会话归属 + 流地址 + queued 状态与统一信封"""
     env = runtime
     response = env.client.post(
         "/api/v1/queries",
@@ -199,6 +199,8 @@ def test_create_query_returns_202_with_stream_url(runtime):
     assert body["success"] is True
     assert body["data"]["state"] == "queued"
     assert body["data"]["stream_url"].endswith("/events")
+    # 新建查询路径同步建会话并回带归属（草稿会话落地用）
+    assert body["data"]["conversation_id"]
     # 等待后台线程结束（teardown 关闭连接前不得有在途执行）
     _wait_terminal(env.client, body["data"]["query_id"])
 

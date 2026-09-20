@@ -168,7 +168,7 @@ def test_full_pipeline_emits_contract_event_sequence(query_env):
     env.embedder.vector = [1.0, 0.0, 0.0, 0.0]
     env.generation.deltas = ["根据[S1]的规定，", "年假为五天", "。[S1]"]
 
-    run = env.orchestrator.start_query(kb_id=env.kb_id, question="年假")
+    run = env.orchestrator.start_query(kb_id=env.kb_id, question="年假").run
     final = _wait_terminal(env.run_repo, run.id)
 
     assert final.state.value == "completed", (
@@ -230,7 +230,7 @@ def test_degradation_on_rerank_transient_uses_rrf_order(query_env):
     env.rerank.error = RerankTransientError("供应方限流")
     env.generation.deltas = ["回答[S1]"]
 
-    run = env.orchestrator.start_query(kb_id=env.kb_id, question="苹果")
+    run = env.orchestrator.start_query(kb_id=env.kb_id, question="苹果").run
     final = _wait_terminal(env.run_repo, run.id)
 
     assert final.state.value == "completed"
@@ -247,7 +247,7 @@ def test_refusal_without_retrieval_candidates_skips_generation(query_env):
     """无可检索索引：拒答话术作答，不调用生成"""
     env = query_env
 
-    run = env.orchestrator.start_query(kb_id=env.kb_id, question="任意问题")
+    run = env.orchestrator.start_query(kb_id=env.kb_id, question="任意问题").run
     final = _wait_terminal(env.run_repo, run.id)
 
     assert final.state.value == "completed"
@@ -280,7 +280,7 @@ def test_cancel_at_token_checkpoint_keeps_partial_answer(query_env):
     env.generation.deltas = ["第一段", "第二段", "第三段"]
     env.generation.on_pause = _request_cancel
 
-    run = env.orchestrator.start_query(kb_id=env.kb_id, question="苹果")
+    run = env.orchestrator.start_query(kb_id=env.kb_id, question="苹果").run
     env.pending_run_id = run.id
     final = _wait_terminal(env.run_repo, run.id)
 
@@ -307,7 +307,7 @@ def test_generation_error_fails_query_with_contract_code(query_env):
     env.generation.deltas = []
     env.generation.error = GenerationRateLimitedError("供应方限流")
 
-    run = env.orchestrator.start_query(kb_id=env.kb_id, question="苹果")
+    run = env.orchestrator.start_query(kb_id=env.kb_id, question="苹果").run
     final = _wait_terminal(env.run_repo, run.id)
 
     assert final.state.value == "failed"
@@ -331,10 +331,10 @@ def test_idempotency_replay_returns_same_run_without_restart(query_env):
 
     first = env.orchestrator.start_query(
         kb_id=env.kb_id, question="苹果", idempotency_key="idem-1"
-    )
+    ).run
     replay = env.orchestrator.start_query(
         kb_id=env.kb_id, question="苹果", idempotency_key="idem-1"
-    )
+    ).run
 
     assert replay.id == first.id
     _wait_terminal(env.run_repo, first.id)
@@ -358,7 +358,7 @@ def test_candidates_segments_and_usage_recorded(query_env):
     env.generation.deltas = ["根据[S1]回答"]
     env.generation.last_usage = (30, 20)
 
-    run = env.orchestrator.start_query(kb_id=env.kb_id, question="带薪年假")
+    run = env.orchestrator.start_query(kb_id=env.kb_id, question="带薪年假").run
     final = _wait_terminal(env.run_repo, run.id)
     assert final.state.value == "completed"
 

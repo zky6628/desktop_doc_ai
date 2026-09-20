@@ -10,6 +10,7 @@ token 检查点生效（保留已生成正文与引用）；重排瞬态失败�
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from app.domain.citation import (
     build_citation_record,
@@ -50,6 +51,18 @@ from app.infrastructure.retrieval import ContextResolver, RetrievalService
 
 # 未知异常的兜底错误码（终态落库与 SSE error 事件）
 _INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+@dataclass(frozen=True)
+class QueryStart:
+    """查询启动结果：运行快照与会话归属
+
+    conversation_id 在新建查询路径上由本次同步创建并返回；幂等重放
+    路径不重复建会话，会话归属以最终聚合为准（此处为 None）
+    """
+
+    run: QueryRun
+    conversation_id: str | None
 
 
 class QueryOrchestrator:
@@ -99,7 +112,7 @@ class QueryOrchestrator:
         question: str,
         conversation_id: str | None = None,
         idempotency_key: str | None = None,
-    ) -> QueryRun:
+    ) -> QueryStart:
         """创建查询运行并启动后台执行（幂等键重放返回既有查询）"""
         if not question.strip():
             raise ValueError("问题不能为空")
@@ -125,7 +138,7 @@ class QueryOrchestrator:
         )
         if run.state is not QueryRunState.QUEUED:
             # 幂等重放：既有查询已在执行或已终态，不重复启动
-            return run
+            return QueryStart(run=run, conversation_id=None)
         # 懒清理：新查询创建时顺带回收已过期的 token 批次（03 保留期）
         self._event_store.purge_expired_tokens()
         conversation = self._conversation_repo.ensure_conversation(
@@ -140,7 +153,7 @@ class QueryOrchestrator:
             daemon=True,
             name=f"query-{run.id[:8]}",
         ).start()
-        return run
+        return QueryStart(run=run, conversation_id=conversation)
 
     def request_cancel(self, run_id: str) -> QueryRun:
         """请求取消查询（幂等）"""

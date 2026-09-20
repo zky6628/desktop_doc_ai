@@ -97,7 +97,7 @@ def create_query_router(deps: QueryDependencies) -> APIRouter:
                 ),
             )
         try:
-            run = deps.orchestrator.start_query(
+            start = deps.orchestrator.start_query(
                 kb_id=body.knowledge_base_id,
                 question=body.question,
                 conversation_id=body.conversation_id,
@@ -109,9 +109,10 @@ def create_query_router(deps: QueryDependencies) -> APIRouter:
                 content=error_envelope(request_id, "INVALID_PARAM", str(exc)),
             )
         payload = {
-            "query_id": run.id,
-            "stream_url": f"/api/v1/queries/{run.id}/events",
-            "state": run.state.value,
+            "query_id": start.run.id,
+            "conversation_id": start.conversation_id,
+            "stream_url": f"/api/v1/queries/{start.run.id}/events",
+            "state": start.run.state.value,
         }
         return JSONResponse(
             status_code=202, content=success_envelope(payload, request_id)

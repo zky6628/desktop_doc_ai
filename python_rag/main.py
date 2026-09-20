@@ -179,6 +179,7 @@ from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXT
 import chromadb
 from app.api.v1 import (
     ApiV1Dependencies,
+    ConversationDependencies,
     DocumentDependencies,
     KnowledgeBaseDependencies,
     MetricsDependencies,
@@ -815,6 +816,10 @@ app.include_router(
                 task_repo=_workbench_task_repo,
                 document_repo=SQLiteDocumentRepository(_workbench_conn),
                 version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
+            ),
+            conversations=ConversationDependencies(
+                kb_repo=SQLiteKnowledgeBaseRepository(_workbench_conn),
+                conversation_repo=_query_conversation_repo,
             ),
         )
     )
