@@ -1,8 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 /// 本地偏好存取：主题模式、最后页面与窗口尺寸
 ///
@@ -16,6 +16,7 @@ class AppPreferences {
   static const _keyLastLocation = 'ui.last_location';
   static const _keyWindowWidth = 'ui.window_width';
   static const _keyWindowHeight = 'ui.window_height';
+  static const _keyClientInstanceId = 'client.instance_id';
 
   /// 默认窗口尺寸与默认进入页面
   static const Size defaultWindowSize = Size(1280, 720);
@@ -67,4 +68,20 @@ class AppPreferences {
         _prefs.setDouble(_keyWindowWidth, size.width),
         _prefs.setDouble(_keyWindowHeight, size.height),
       ]);
+
+  String? _instanceIdCache;
+
+  /// 客户端实例标识：首次访问生成随机 UUID 并持久化（进程内缓存避免
+  /// 重复生成竞态）；服务端只落 SHA-256，原文不出本机
+  String get clientInstanceId {
+    final existing = _instanceIdCache ?? _prefs.getString(_keyClientInstanceId);
+    if (existing != null) {
+      _instanceIdCache = existing;
+      return existing;
+    }
+    final generated = const Uuid().v4();
+    _instanceIdCache = generated;
+    unawaited(_prefs.setString(_keyClientInstanceId, generated));
+    return generated;
+  }
 }
