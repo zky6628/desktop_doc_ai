@@ -18,10 +18,13 @@ Future<void> main() async {
   final preferences = await AppPreferences.load();
   await _initWindow(preferences);
 
-  final shellController = AppShellController()..start();
+  final knowledgeClient = KnowledgeApiClient();
+  final shellController = AppShellController(
+    knowledgeClient: knowledgeClient,
+  )..start();
   final bundle = ApiBundle(
     preferences: preferences,
-    knowledgeClient: KnowledgeApiClient(),
+    knowledgeClient: knowledgeClient,
   );
 
   runApp(

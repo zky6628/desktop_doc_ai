@@ -133,4 +133,137 @@ void main() {
     expect(find.text('全部批准'), findsOneWidget);
     expect(find.text('全部拒绝'), findsOneWidget);
   });
+
+  testWidgets('任务中心：队列行展示与详情事件时间线展开', (WidgetTester tester) async {
+    var listCalls = 0;
+    Future<http.Response> tasksResponse() async {
+      listCalls += 1;
+      final state = listCalls == 1 ? 'queued' : 'succeeded';
+      return http.Response.bytes(
+        utf8.encode(jsonEncode({
+          'success': true,
+          'request_id': 'req-1',
+          'data': {
+            'items': [
+              {
+                'id': 't-9',
+                'task_type': 'import',
+                'state': state,
+                'stage': 'parsing_local',
+                'progress': 0.2,
+                'queue_position': 1,
+                'cancellable': true,
+                'retryable': false,
+                'retry_count': 0,
+                'max_retries': 3,
+                'knowledge_base_id': 'kb-1',
+                'document_id': 'd-1',
+                'document_version_id': null,
+                'parent_task_id': null,
+                'error': null,
+                'created_at': '2026-09-20T15:40:00+00:00',
+                'started_at': null,
+                'finished_at': null,
+                'document_display_name': '迪士尼公司发展分析.pdf',
+                'document_size_bytes': 9437184,
+                'route_mode': null,
+                'route_reason': null,
+              },
+            ],
+            'next_cursor': null,
+          },
+          'error': null,
+        })),
+        200,
+        headers: {'content-type': 'application/json; charset=utf-8'},
+      );
+    }
+
+    final knowledgeClient = KnowledgeApiClient(
+      client: MockClient((request) async {
+        final path = request.url.path;
+        if (path == '/api/v1/tasks') return tasksResponse();
+        if (path == '/api/v1/tasks/t-9') {
+          return http.Response.bytes(
+            utf8.encode(jsonEncode({
+              'success': true,
+              'request_id': 'req-2',
+              'data': {
+                'task': {
+                  'id': 't-9',
+                  'task_type': 'import',
+                  'state': 'queued',
+                  'stage': 'parsing_local',
+                  'progress': 0.2,
+                  'queue_position': 1,
+                  'cancellable': true,
+                  'retryable': false,
+                  'retry_count': 0,
+                  'max_retries': 3,
+                  'knowledge_base_id': 'kb-1',
+                  'document_id': 'd-1',
+                  'document_version_id': null,
+                  'parent_task_id': null,
+                  'error': null,
+                  'created_at': '2026-09-20T15:40:00+00:00',
+                  'started_at': null,
+                  'finished_at': null,
+                  'document_display_name': null,
+                  'document_size_bytes': null,
+                  'route_mode': null,
+                  'route_reason': null,
+                },
+                'recent_events': [
+                  {
+                    'id': 'ev-1',
+                    'event_type': 'created',
+                    'state': 'queued',
+                    'stage': null,
+                    'attempt_count': 0,
+                    'worker': null,
+                    'created_at': '2026-09-20T15:40:00+00:00',
+                    'error_code': null,
+                    'detail_json': null,
+                  },
+                ],
+              },
+              'error': null,
+            })),
+            200,
+            headers: {'content-type': 'application/json; charset=utf-8'},
+          );
+        }
+        return http.Response.bytes(
+          utf8.encode(jsonEncode({
+            'success': true,
+            'request_id': 'req-x',
+            'data': {'items': [], 'next_cursor': null},
+            'error': null,
+          })),
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'},
+        );
+      }),
+    );
+
+    final preferences = {'ui.last_location': '/tasks'};
+    await tester.pumpWidget(
+      await buildWorkbenchAppWithKnowledge(
+        preferences: preferences,
+        knowledgeClient: knowledgeClient,
+      ),
+    );
+    await settleChatConnection(tester);
+
+    // 队列行展示：settle 过程已推进一轮 5 秒自动轮询（mock 第二次
+    // 返回终态），任务行应显示为成功
+    expect(find.text('迪士尼公司发展分析.pdf'), findsOneWidget);
+    expect(find.text('成功'), findsOneWidget);
+
+    // 点击行展开详情：事件时间线在场
+    await tester.tap(find.text('迪士尼公司发展分析.pdf'));
+    await tester.pumpAndSettle();
+    expect(find.text('事件时间线'), findsOneWidget);
+    expect(find.text('created'), findsOneWidget);
+  });
 }

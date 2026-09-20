@@ -227,6 +227,19 @@ enum TaskWireStatus {
 
   bool get isTerminal =>
       this == succeeded || this == failed || this == cancelled;
+
+  /// 用户可读状态标签（任务中心/文档列表展示用）
+  String get zhLabel => switch (this) {
+        queued => '排队中',
+        waitingUser => '等待确认',
+        running => '处理中',
+        waitingExternal => '等待云端结果',
+        retryWaiting => '等待重试',
+        cancelRequested => '正在请求取消',
+        succeeded => '成功',
+        failed => '失败',
+        cancelled => '已取消',
+      };
 }
 
 /// 任务（对齐后端 TaskDTO，含展示联查字段）
@@ -242,6 +255,8 @@ class TaskDto {
     required this.retryable,
     required this.retryCount,
     required this.maxRetries,
+    required this.stageAttempt,
+    required this.totalAttemptCount,
     required this.knowledgeBaseId,
     required this.documentId,
     required this.documentVersionId,
@@ -267,6 +282,8 @@ class TaskDto {
         retryable: (json['retryable'] ?? false) as bool,
         retryCount: json['retry_count'] as int? ?? 0,
         maxRetries: json['max_retries'] as int? ?? 3,
+        stageAttempt: json['stage_attempt'] as int? ?? 0,
+        totalAttemptCount: json['total_attempt_count'] as int? ?? 0,
         knowledgeBaseId: json['knowledge_base_id'] as String?,
         documentId: json['document_id'] as String?,
         documentVersionId: json['document_version_id'] as String?,
@@ -293,6 +310,8 @@ class TaskDto {
   final bool retryable;
   final int retryCount;
   final int maxRetries;
+  final int stageAttempt;
+  final int totalAttemptCount;
   final String? knowledgeBaseId;
   final String? documentId;
   final String? documentVersionId;

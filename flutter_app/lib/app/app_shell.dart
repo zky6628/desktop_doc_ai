@@ -108,6 +108,33 @@ class AppShell extends StatelessWidget {
                   : AppColors.textHint,
             ),
           ),
+          if (controller.nonTerminalTaskCount != null) ...[
+            const SizedBox(width: 16),
+            Tooltip(
+              message: '非终态任务数，点击进入任务中心',
+              child: InkWell(
+                onTap: () => context.go('/tasks'),
+                borderRadius: BorderRadius.circular(10),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.task_alt, size: 16),
+                      const SizedBox(width: 6),
+                      Text(
+                        '任务 ${controller.nonTerminalTaskCount}',
+                        style: const TextStyle(fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
       actions: [

@@ -15,6 +15,7 @@ import 'package:desktop_document_ai/api/knowledge_api_client.dart';
 import 'package:desktop_document_ai/app/app_preferences.dart';
 import 'package:desktop_document_ai/controllers/document_detail_controller.dart';
 import 'package:desktop_document_ai/controllers/knowledge_base_controller.dart';
+import 'package:desktop_document_ai/controllers/task_center_controller.dart';
 
 http.Response envelope(Map<String, dynamic> data, {int status = 200}) =>
     http.Response.bytes(
@@ -366,6 +367,183 @@ void main() {
       );
       expect(async.nonPeriodicTimerCount, 0);
       expect(documentsCalls, 2);
+      controller.dispose();
+    });
+  });
+
+  test('任务列表携带筛选参数并还原队列位次', () async {
+    SharedPreferences.setMockInitialValues({});
+    final requestedQueries = <String?>[];
+    final client = clientWith((request) async {
+      requestedQueries.add(request.url.queryParameters['state']);
+      return envelope({
+        'items': [
+          {
+            'id': 't-1',
+            'task_type': 'import',
+            'state': 'queued',
+            'stage': null,
+            'progress': 0,
+            'queue_position': 3,
+            'cancellable': true,
+            'retryable': false,
+            'retry_count': 0,
+            'max_retries': 3,
+            'knowledge_base_id': 'kb-1',
+            'document_id': 'd-1',
+            'document_version_id': null,
+            'parent_task_id': null,
+            'error': null,
+            'created_at': '2026-09-20T00:00:00+00:00',
+            'started_at': null,
+            'finished_at': null,
+            'document_display_name': '解析中.pdf',
+            'document_size_bytes': null,
+            'route_mode': null,
+            'route_reason': null,
+          },
+        ],
+        'next_cursor': null,
+      });
+    });
+
+    final controller = TaskCenterController(knowledgeClient: client);
+    await controller.loadInitial(state: 'queued');
+
+    expect(requestedQueries.single, 'queued');
+    final task = controller.tasks.single;
+    expect(task.queuePosition, 3);
+    expect(task.state.zhLabel, '排队中');
+    controller.dispose();
+  });
+
+  test('取消任务成功后刷新列表状态', () async {
+    SharedPreferences.setMockInitialValues({});
+    var calls = 0;
+    final client = clientWith((request) async {
+      if (request.method == 'POST' &&
+          request.url.path == '/api/v1/tasks/t-1/cancel') {
+        return envelope({
+          'task': {
+            'id': 't-1',
+            'task_type': 'import',
+            'state': 'cancel_requested',
+            'stage': 'parsing_local',
+            'progress': 0.2,
+            'queue_position': null,
+            'cancellable': true,
+            'retryable': false,
+            'retry_count': 0,
+            'max_retries': 3,
+            'knowledge_base_id': 'kb-1',
+            'document_id': 'd-1',
+            'document_version_id': null,
+            'parent_task_id': null,
+            'error': null,
+            'created_at': '2026-09-20T00:00:00+00:00',
+            'started_at': null,
+            'finished_at': null,
+            'document_display_name': null,
+            'document_size_bytes': null,
+            'route_mode': null,
+            'route_reason': null,
+          },
+        });
+      }
+      calls += 1;
+      final state = calls == 1 ? 'queued' : 'cancel_requested';
+      return envelope({
+        'items': [
+          {
+            'id': 't-1',
+            'task_type': 'import',
+            'state': state,
+            'stage': null,
+            'progress': 0,
+            'queue_position': null,
+            'cancellable': true,
+            'retryable': false,
+            'retry_count': 0,
+            'max_retries': 3,
+            'knowledge_base_id': 'kb-1',
+            'document_id': 'd-1',
+            'document_version_id': null,
+            'parent_task_id': null,
+            'error': null,
+            'created_at': '2026-09-20T00:00:00+00:00',
+            'started_at': null,
+            'finished_at': null,
+            'document_display_name': null,
+            'document_size_bytes': null,
+            'route_mode': null,
+            'route_reason': null,
+          },
+        ],
+        'next_cursor': null,
+      });
+    });
+
+    final controller = TaskCenterController(knowledgeClient: client);
+    await controller.loadInitial();
+    expect(controller.tasks.single.state, TaskWireStatus.queued);
+
+    final ok = await controller.cancelTask('t-1');
+    expect(ok, isTrue);
+    expect(controller.tasks.single.state, TaskWireStatus.cancelRequested);
+    controller.dispose();
+  });
+
+  test('任务中心存在非终态任务时自动轮询，全部终态后停止', () {
+    fakeAsync((async) {
+      SharedPreferences.setMockInitialValues({});
+      var listCalls = 0;
+      final client = clientWith((request) async {
+        if (request.url.path == '/api/v1/tasks') {
+          listCalls += 1;
+          final state = listCalls == 1 ? 'queued' : 'succeeded';
+          return envelope({
+            'items': [
+              {
+                'id': 't-1',
+                'task_type': 'import',
+                'state': state,
+                'stage': null,
+                'progress': 0,
+                'queue_position': null,
+                'cancellable': false,
+                'retryable': false,
+                'retry_count': 0,
+                'max_retries': 3,
+                'knowledge_base_id': null,
+                'document_id': null,
+                'document_version_id': null,
+                'parent_task_id': null,
+                'error': null,
+                'created_at': '2026-09-20T00:00:00+00:00',
+                'started_at': null,
+                'finished_at': null,
+                'document_display_name': null,
+                'document_size_bytes': null,
+                'route_mode': null,
+                'route_reason': null,
+              },
+            ],
+            'next_cursor': null,
+          });
+        }
+        return envelope({'items': [], 'next_cursor': null});
+      });
+
+      final controller = TaskCenterController(knowledgeClient: client);
+      controller.loadInitial();
+      async.elapse(const Duration(milliseconds: 10));
+      expect(controller.tasks.single.state, TaskWireStatus.queued);
+      expect(async.nonPeriodicTimerCount, 1);
+
+      async.elapse(const Duration(seconds: 5));
+      expect(controller.tasks.single.state, TaskWireStatus.succeeded);
+      expect(async.nonPeriodicTimerCount, 0);
+      expect(listCalls, 2);
       controller.dispose();
     });
   });

@@ -6,6 +6,7 @@ import '../pages/document_detail_page.dart';
 import '../pages/knowledge_bases_page.dart';
 import '../pages/legacy_chat_page.dart';
 import '../pages/placeholder_page.dart';
+import '../pages/task_center_page.dart';
 import 'app_preferences.dart';
 import 'app_shell.dart';
 
@@ -86,11 +87,17 @@ GoRouter createRouter({
             routes: [
               GoRoute(
                 path: AppShell.locations[2],
-                builder: (context, state) => const PlaceholderPage(
-                  icon: Icons.task_alt,
-                  title: '任务中心',
-                  message: '任务队列与事件时间线将在后续任务提供',
-                ),
+                builder: (context, state) => bundle == null
+                    ? const PlaceholderPage(
+                        icon: Icons.task_alt,
+                        title: '任务中心',
+                        message: '任务队列与事件时间线将在后续任务提供',
+                      )
+                    : TaskCenterPage(
+                        knowledgeClient: bundle.knowledgeClient,
+                        initialState: state.uri.queryParameters['state'],
+                        initialTaskType: state.uri.queryParameters['task_type'],
+                      ),
               ),
             ],
           ),
