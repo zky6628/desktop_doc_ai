@@ -12,6 +12,7 @@ import 'package:path_provider_platform_interface/path_provider_platform_interfac
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:desktop_document_ai/api/knowledge_api_client.dart';
 import 'package:desktop_document_ai/app/app_preferences.dart';
 import 'package:desktop_document_ai/app/router.dart';
 import 'package:desktop_document_ai/controllers/app_shell_controller.dart';
@@ -64,6 +65,29 @@ Future<Widget> buildWorkbenchApp({
 }) async {
   SharedPreferences.setMockInitialValues(preferences);
   final appPreferences = await AppPreferences.load();
+  return _assemble(appPreferences, bundle: null);
+}
+
+/// 构建带知识库域客户端的应用（路由注入 ApiBundle）
+Future<Widget> buildWorkbenchAppWithKnowledge({
+  Map<String, Object> preferences = const {},
+  required KnowledgeApiClient knowledgeClient,
+}) async {
+  SharedPreferences.setMockInitialValues(preferences);
+  final appPreferences = await AppPreferences.load();
+  return _assemble(
+    appPreferences,
+    bundle: ApiBundle(
+      preferences: appPreferences,
+      knowledgeClient: knowledgeClient,
+    ),
+  );
+}
+
+Future<Widget> _assemble(
+  AppPreferences appPreferences, {
+  required ApiBundle? bundle,
+}) async {
   return MultiProvider(
     providers: [
       ChangeNotifierProvider(create: (context) => DropFileModel()),
@@ -75,6 +99,7 @@ Future<Widget> buildWorkbenchApp({
       router: createRouter(
         initialLocation: appPreferences.lastLocation,
         preferences: appPreferences,
+        bundle: bundle,
       ),
       themeMode: appPreferences.themeMode,
       preferences: appPreferences,

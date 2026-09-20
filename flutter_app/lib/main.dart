@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'api/knowledge_api_client.dart';
 import 'app/app_preferences.dart';
 import 'app/router.dart';
 import 'controllers/app_shell_controller.dart';
@@ -18,6 +19,10 @@ Future<void> main() async {
   await _initWindow(preferences);
 
   final shellController = AppShellController()..start();
+  final bundle = ApiBundle(
+    preferences: preferences,
+    knowledgeClient: KnowledgeApiClient(),
+  );
 
   runApp(
     MultiProvider(
@@ -29,6 +34,7 @@ Future<void> main() async {
         router: createRouter(
           initialLocation: preferences.lastLocation,
           preferences: preferences,
+          bundle: bundle,
         ),
         themeMode: preferences.themeMode,
         preferences: preferences,

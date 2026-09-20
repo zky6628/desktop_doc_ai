@@ -913,6 +913,28 @@ class TaskRepository(ABC):
         任务历史）；目标不存在返回空列表"""
 
     @abstractmethod
+    def list_tasks(
+        self,
+        *,
+        states: Sequence[TaskStatus] | None = None,
+        task_type: str | None = None,
+        knowledge_base_id: str | None = None,
+        document_id: str | None = None,
+        limit: int = 50,
+        after_created_at: str | None = None,
+        after_id: str | None = None,
+    ) -> list[Task]:
+        """按筛选条件列出任务（created_at + id 倒序的 keyset 分页）
+
+        states 为空元组/None 时不按状态过滤；排序键语义与知识库
+        列表一致（任务中心的队列视图入口）"""
+
+    @abstractmethod
+    def queue_position(self, task_id: str) -> int | None:
+        """queued 任务的队列位次（按领取顺序：priority 降序、
+        created_at/id 升序）；非排队状态或任务不存在返回 None"""
+
+    @abstractmethod
     def claim_next(
         self, worker_id: str, task_type: str | None = None
     ) -> Task | None:

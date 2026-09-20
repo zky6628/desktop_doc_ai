@@ -183,6 +183,7 @@ from app.api.v1 import (
     KnowledgeBaseDependencies,
     MetricsDependencies,
     QueryDependencies,
+    TaskDependencies,
     create_api_router,
 )
 from app.domain.ids import uuid7
@@ -809,6 +810,11 @@ app.include_router(
                 task_repo=_workbench_task_repo,
                 deletion_repo=SQLiteDeletionRepository(_workbench_conn),
                 import_repo=SQLiteImportRepository(_workbench_conn),
+            ),
+            tasks=TaskDependencies(
+                task_repo=_workbench_task_repo,
+                document_repo=SQLiteDocumentRepository(_workbench_conn),
+                version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
             ),
         )
     )

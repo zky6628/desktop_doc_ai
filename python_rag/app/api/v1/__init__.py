@@ -35,6 +35,7 @@ from .knowledge_bases import (
 )
 from .metrics import MetricsDependencies, create_metrics_router
 from .queries import QueryDependencies, create_query_router
+from .tasks import TaskDependencies, create_tasks_router
 
 # 单批次文件数上限复用上传策略常量，保证口径一致
 _MAX_BATCH_FILES = file_policy.MAX_BATCH_FILES
@@ -54,6 +55,7 @@ class ApiV1Dependencies:
     metrics: MetricsDependencies | None = None
     knowledge_bases: KnowledgeBaseDependencies | None = None
     documents: DocumentDependencies | None = None
+    tasks: TaskDependencies | None = None
 
 
 class CloudConfirmationRequest(BaseModel):
@@ -80,6 +82,8 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
         )
     if deps.documents is not None:
         router.include_router(create_documents_router(deps.documents))
+    if deps.tasks is not None:
+        router.include_router(create_tasks_router(deps.tasks))
 
     @router.post("/knowledge-bases/{kb_id}/documents")
     def upload_documents(
@@ -219,9 +223,11 @@ __all__ = [
     "KnowledgeBaseDependencies",
     "MetricsDependencies",
     "QueryDependencies",
+    "TaskDependencies",
     "create_api_router",
     "create_documents_router",
     "create_knowledge_bases_router",
     "create_metrics_router",
     "create_query_router",
+    "create_tasks_router",
 ]

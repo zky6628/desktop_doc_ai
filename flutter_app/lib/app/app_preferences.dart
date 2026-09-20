@@ -17,6 +17,7 @@ class AppPreferences {
   static const _keyWindowWidth = 'ui.window_width';
   static const _keyWindowHeight = 'ui.window_height';
   static const _keyClientInstanceId = 'client.instance_id';
+  static const _keyLastKbId = 'ui.last_kb_id';
 
   /// 默认窗口尺寸与默认进入页面
   static const Size defaultWindowSize = Size(1280, 720);
@@ -83,5 +84,17 @@ class AppPreferences {
     _instanceIdCache = generated;
     unawaited(_prefs.setString(_keyClientInstanceId, generated));
     return generated;
+  }
+
+  String? _lastKbIdCache;
+
+  /// 最近选择的知识库（重启恢复；失效 ID 由知识库页校验后忽略）
+  String? get lastKnowledgeBaseId =>
+      _lastKbIdCache ?? _prefs.getString(_keyLastKbId);
+
+  Future<void> saveLastKnowledgeBaseId(String? kbId) {
+    _lastKbIdCache = kbId;
+    if (kbId == null) return _prefs.remove(_keyLastKbId);
+    return _prefs.setString(_keyLastKbId, kbId);
   }
 }

@@ -48,6 +48,7 @@ dependencies:
   shared_preferences: ^2.5.5
   # 桌面窗口管理：最小尺寸约束与窗口尺寸持久化
   window_manager: ^0.5.2
+  file_picker: ^13.1.0
 
 dev_dependencies:
   flutter_test:

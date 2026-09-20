@@ -354,6 +354,64 @@ class SQLiteTaskRepository(TaskRepositoryPort):
         ).fetchall()
         return [self._to_entity(row) for row in rows]
 
+    def list_tasks(
+        self,
+        *,
+        states=None,
+        task_type: str | None = None,
+        knowledge_base_id: str | None = None,
+        document_id: str | None = None,
+        limit: int = 50,
+        after_created_at: str | None = None,
+        after_id: str | None = None,
+    ) -> list[Task]:
+        """按筛选条件列出任务（方法契约见领域 Port 定义）"""
+        sql = f"SELECT {_TASK_COLUMNS} FROM tasks WHERE 1=1"
+        params: list[str | int] = []
+        if states:
+            sql += f" AND state IN ({','.join('?' * len(states))})"
+            params.extend(state.value for state in states)
+        if task_type is not None:
+            sql += " AND task_type = ?"
+            params.append(task_type)
+        if knowledge_base_id is not None:
+            sql += " AND knowledge_base_id = ?"
+            params.append(knowledge_base_id)
+        if document_id is not None:
+            sql += " AND document_id = ?"
+            params.append(document_id)
+        if after_created_at is not None and after_id is not None:
+            sql += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            params.extend([after_created_at, after_created_at, after_id])
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._to_entity(row) for row in rows]
+
+    def queue_position(self, task_id: str) -> int | None:
+        """queued 任务的队列位次（priority 降序、created_at/id 升序）
+
+        非排队状态返回 None；任务不存在返回 None
+        """
+        task = self._conn.execute(
+            "SELECT state, priority, created_at, id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if task is None or task[0] != TaskStatus.QUEUED.value:
+            return None
+        ahead = self._conn.execute(
+            "SELECT COUNT(*) FROM tasks"
+            " WHERE state = ?"
+            " AND (priority > ?"
+            "      OR (priority = ? AND (created_at < ?"
+            "          OR (created_at = ? AND id < ?))))",
+            (
+                TaskStatus.QUEUED.value,
+                task[1], task[1], task[2], task[2], task[3],
+            ),
+        ).fetchone()[0]
+        return ahead + 1
+
     def claim_next(
         self, worker_id: str, task_type: str | None = None
     ) -> Task | None:
