@@ -18,6 +18,7 @@ from app.api.v1 import (
 from app.domain.ids import uuid7
 from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.repositories import (
+    SQLiteCitationRepository,
     SQLiteConversationRepository,
     SQLiteKnowledgeBaseRepository,
 )
@@ -40,6 +41,7 @@ def runtime(tmp_path):
                 conversations=ConversationDependencies(
                     kb_repo=SQLiteKnowledgeBaseRepository(conn),
                     conversation_repo=conversation_repo,
+                    citation_repo=SQLiteCitationRepository(conn),
                 ),
             )
         )
@@ -184,6 +186,49 @@ def test_messages_returns_full_ascending_history(runtime):
     roles = [item["role"] for item in data["items"]]
     assert roles == ["user", "assistant", "user"]
     assert all(item["id"] and item["created_at"] for item in data["items"])
+
+
+def test_messages_attach_citations_to_assistant_messages(runtime):
+    """助手消息携带引用快照（含引用编号），用户消息引用为空列表"""
+    env = runtime
+    conversation_id = _conversation_with_messages(
+        env, [("user", "问题"), ("assistant", "根据[S1]回答。")]
+    )
+    assistant_id = env.conn.execute(
+        "SELECT id FROM messages WHERE conversation_id = ? AND role = 'assistant'",
+        (conversation_id,),
+    ).fetchone()[0]
+    env.conn.execute(
+        "INSERT INTO citations (id, assistant_message_id, citation_order,"
+        " chunk_id, knowledge_base_id_snapshot, document_id_snapshot,"
+        " document_version_id_snapshot, file_name_snapshot, version_no_snapshot,"
+        " quoted_text_snapshot, content_snapshot, page_no, section_path,"
+        " validation_state, vector_score, rerank_score, created_at)"
+        " VALUES (?, ?, 1, NULL, ?, 'doc-1', 'ver-1', '手册.pdf', 2,"
+        " '引文', '引用正文快照', 3, '休假/年假', 'validated', 0.9, 0.8, ?)",
+        (uuid7(), assistant_id, env.kb_id, FIXED_TIME),
+    )
+
+    response = env.client.get(
+        f"/api/v1/conversations/{conversation_id}/messages"
+    )
+
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert items[0]["citations"] == []
+    citations = items[1]["citations"]
+    assert len(citations) == 1
+    citation = citations[0]
+    assert citation["citation_order"] == 1
+    assert citation["chunk_id"] is None
+    assert citation["file_name"] == "手册.pdf"
+    assert citation["version_no"] == 2
+    assert citation["page_no"] == 3
+    assert citation["section_path"] == "休假/年假"
+    assert citation["content"] == "引用正文快照"
+    assert citation["validation_state"] == "validated"
+    assert citation["vector_score"] == 0.9
+    assert citation["rerank_score"] == 0.8
 
 
 def test_messages_rejects_unknown_conversation(runtime):

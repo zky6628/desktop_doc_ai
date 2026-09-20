@@ -12,9 +12,18 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from app.domain.errors import EntityNotFoundError
-from app.domain.ports import ConversationRepository, KnowledgeBaseRepository
+from app.domain.ports import (
+    CitationRepository,
+    ConversationRepository,
+    KnowledgeBaseRepository,
+)
 
-from .envelope import error_envelope, new_request_id, success_envelope
+from .envelope import (
+    error_envelope,
+    new_request_id,
+    serialize_citation,
+    success_envelope,
+)
 from .pagination import InvalidCursorError, clamp_limit, decode_cursor, encode_cursor
 
 
@@ -24,6 +33,7 @@ class ConversationDependencies:
 
     kb_repo: KnowledgeBaseRepository
     conversation_repo: ConversationRepository
+    citation_repo: CitationRepository
 
 
 def create_conversations_router(deps: ConversationDependencies) -> APIRouter:
@@ -78,7 +88,11 @@ def create_conversations_router(deps: ConversationDependencies) -> APIRouter:
 
     @router.get("/conversations/{conversation_id}/messages")
     def list_messages(conversation_id: str) -> JSONResponse:
-        """历史消息（升序全量；已删除知识库的会话仍可读）"""
+        """历史消息（升序全量；已删除知识库的会话仍可读）
+
+        助手消息携带引用快照（不可变事实，切片清理后仍可展示），
+        客户端据此在历史会话中定位回答正文中的 [S编号]。
+        """
         request_id = new_request_id()
         try:
             messages = deps.conversation_repo.list_messages(conversation_id)
@@ -91,7 +105,17 @@ def create_conversations_router(deps: ConversationDependencies) -> APIRouter:
             )
         payload = {
             "conversation_id": conversation_id,
-            "items": [_message_view(message) for message in messages],
+            "items": [
+                _message_view(
+                    message,
+                    (
+                        deps.citation_repo.list_by_message(message.id)
+                        if message.role == "assistant"
+                        else []
+                    ),
+                )
+                for message in messages
+            ],
         }
         return JSONResponse(
             status_code=200, content=success_envelope(payload, request_id)
@@ -135,11 +159,12 @@ def _summary_view(summary) -> dict:
     }
 
 
-def _message_view(message) -> dict:
-    """消息的响应视图"""
+def _message_view(message, citations) -> dict:
+    """消息的响应视图（助手消息携带引用快照，用户消息为空列表）"""
     return {
         "id": message.id,
         "role": message.role,
         "content": message.content,
         "created_at": message.created_at,
+        "citations": [serialize_citation(record) for record in citations],
     }

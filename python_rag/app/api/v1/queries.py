@@ -25,7 +25,12 @@ from app.domain.ports import (
     QueryRunRepository,
 )
 
-from .envelope import error_envelope, new_request_id, success_envelope
+from .envelope import (
+    error_envelope,
+    new_request_id,
+    serialize_citation,
+    success_envelope,
+)
 
 if TYPE_CHECKING:
     from app.infrastructure.query import QueryOrchestrator
@@ -153,7 +158,7 @@ def create_query_router(deps: QueryDependencies) -> APIRouter:
                 else {"code": run.error_code, "message": run.error_message}
             ),
             "answer": answer,
-            "citations": [_citation_view(record) for record in citations],
+            "citations": [serialize_citation(record) for record in citations],
         }
         return JSONResponse(
             status_code=200, content=success_envelope(payload, request_id)
@@ -318,23 +323,3 @@ def _format_sse(event) -> str:
     else:
         data = event.payload_json or "{}"
     return f"id: {event.event_seq}\nevent: {event.event_type}\ndata: {data}\n\n"
-
-
-def _citation_view(record) -> dict:
-    """引用快照的响应视图（对齐 CitationDTO 子集）"""
-    return {
-        "id": record.citation_id,
-        "chunk_id": record.chunk_id,
-        "document_id": record.document_id_snapshot,
-        "document_version_id": record.document_version_id_snapshot,
-        "file_name": record.file_name_snapshot,
-        "version_no": record.version_no_snapshot,
-        "page_no": record.page_no,
-        "section_path": record.section_path,
-        "content": record.content_snapshot,
-        "validation_state": record.validation_state,
-        "vector_score": record.vector_score,
-        "keyword_score": record.keyword_score,
-        "fusion_score": record.fusion_score,
-        "rerank_score": record.rerank_score,
-    }

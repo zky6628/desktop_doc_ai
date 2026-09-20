@@ -5,11 +5,12 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'api/conversation_api_client.dart';
 import 'api/knowledge_api_client.dart';
+import 'api/query_api_client.dart';
 import 'app/app_preferences.dart';
 import 'app/router.dart';
 import 'controllers/app_shell_controller.dart';
-import 'models/drop_file_model.dart';
 import 'theme/theme.dart';
 
 Future<void> main() async {
@@ -25,12 +26,13 @@ Future<void> main() async {
   final bundle = ApiBundle(
     preferences: preferences,
     knowledgeClient: knowledgeClient,
+    queryClient: QueryApiClient(instanceId: preferences.clientInstanceId),
+    conversationClient: ConversationApiClient(),
   );
 
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (context) => DropFileModel()),
         ChangeNotifierProvider<AppShellController>.value(value: shellController),
       ],
       child: WorkbenchApp(

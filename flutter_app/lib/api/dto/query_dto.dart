@@ -26,17 +26,22 @@ enum QueryRunStatus {
 class QueryCreated {
   const QueryCreated({
     required this.queryId,
+    required this.conversationId,
     required this.streamUrl,
     required this.state,
   });
 
   factory QueryCreated.fromJson(Map<String, dynamic> json) => QueryCreated(
         queryId: json['query_id'] as String,
+        conversationId: json['conversation_id'] as String?,
         streamUrl: json['stream_url'] as String,
         state: QueryRunStatus.fromName(json['state'] as String),
       );
 
   final String queryId;
+
+  /// 新建查询路径回带的会话归属（幂等重放为 null）
+  final String? conversationId;
   final String streamUrl;
   final QueryRunStatus state;
 }

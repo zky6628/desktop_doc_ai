@@ -48,6 +48,31 @@ def error_envelope(
     }
 
 
+def serialize_citation(record) -> dict:
+    """把引用快照记录序列化为 CitationDTO 视图
+
+    SSE citation 事件、查询聚合与会话历史消息共用同一形状；citation_order
+    即回答正文 [S编号] 的编号，供客户端内联定位。
+    """
+    return {
+        "id": record.citation_id,
+        "citation_order": record.citation_order,
+        "chunk_id": record.chunk_id,
+        "document_id": record.document_id_snapshot,
+        "document_version_id": record.document_version_id_snapshot,
+        "file_name": record.file_name_snapshot,
+        "version_no": record.version_no_snapshot,
+        "page_no": record.page_no,
+        "section_path": record.section_path,
+        "content": record.content_snapshot,
+        "validation_state": record.validation_state,
+        "vector_score": record.vector_score,
+        "keyword_score": record.keyword_score,
+        "fusion_score": record.fusion_score,
+        "rerank_score": record.rerank_score,
+    }
+
+
 def serialize_task(task: Task, *, queue_position: int | None = None) -> dict:
     """把任务实体序列化为接口层最小 TaskDTO
 

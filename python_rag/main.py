@@ -820,6 +820,7 @@ app.include_router(
             conversations=ConversationDependencies(
                 kb_repo=SQLiteKnowledgeBaseRepository(_workbench_conn),
                 conversation_repo=_query_conversation_repo,
+                citation_repo=_query_citation_repo,
             ),
         )
     )

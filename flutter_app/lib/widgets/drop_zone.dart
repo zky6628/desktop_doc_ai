@@ -1,25 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:cross_file/cross_file.dart';
-import 'package:provider/provider.dart';
 import '../theme/colors.dart';
-import '../models/drop_file_model.dart';
 import '../utils/file_handler.dart';
 
 /// 拖拽区域组件
 /// 默认状态：虚线边框 + 上传图标
 /// 拖入状态：实线蓝色边框 + 释放图标 + 高亮背景
+///
+/// 文件落地交给调用方处理（onFilesDropped），组件不耦合任何业务模型。
 class DropZone extends StatefulWidget {
   /// 拖拽区域高度
   final double height;
 
-  /// 拖入文件回调（若为 null 则使用 Provider 自动添加）
-  final void Function(List<XFile>)? onFilesDropped;
+  /// 拖入文件回调（过滤支持的格式后调用）
+  final void Function(List<XFile> files) onFilesDropped;
 
   const DropZone({
     super.key,
     this.height = 150,
-    this.onFilesDropped,
+    required this.onFilesDropped,
   });
 
   @override
@@ -65,11 +65,7 @@ class _DropZoneState extends State<DropZone> {
 
         if (supported.isEmpty) return;
 
-        if (widget.onFilesDropped != null) {
-          widget.onFilesDropped!(supported);
-        } else {
-          context.read<DropFileModel>().addFiles(supported);
-        }
+        widget.onFilesDropped(supported);
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),

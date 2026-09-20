@@ -1,0 +1,68 @@
+import 'package:http/http.dart' as http;
+
+import 'api_client_base.dart';
+import 'api_error.dart';
+import 'dto/conversation_dto.dart';
+import 'dto/knowledge_dto.dart';
+
+/// 会话域 API 客户端：会话列表/历史消息/删除
+///
+/// 信封与错误解析复用 [ApiClientBase]；删除为立即生效操作，204 无信封。
+class ConversationApiClient {
+  ConversationApiClient({http.Client? client, Uri? baseUrl})
+    : _base = ApiClientBase(client: client, baseUrl: baseUrl);
+
+  final ApiClientBase _base;
+
+  /// 会话列表（keyset 分页，最近活跃倒序，含最后消息摘要）
+  Future<ConversationPage> listConversations({
+    required String kbId,
+    String? cursor,
+    int? limit,
+  }) async {
+    final response = await _base.send(
+      (client) => client.get(
+        _base.uri('/api/v1/conversations').replace(
+              queryParameters: {
+                'kb_id': kbId,
+                'cursor': ?cursor,
+                if (limit != null) 'limit': '$limit',
+              },
+            ),
+      ),
+    );
+    final data = _base.dataOf(response);
+    return ApiPage(
+      items: [
+        for (final item in (data['items'] ?? []) as List)
+          ConversationSummaryDto.fromJson(item as Map<String, dynamic>),
+      ],
+      nextCursor: data['next_cursor'] as String?,
+    );
+  }
+
+  /// 历史消息（升序全量；已删除知识库的会话仍可读）
+  Future<ConversationMessages> listMessages(String conversationId) async {
+    final response = await _base.send(
+      (client) =>
+          client.get(_base.uri('/api/v1/conversations/$conversationId/messages')),
+    );
+    return ConversationMessages.fromJson(_base.dataOf(response));
+  }
+
+  /// 删除会话（立即生效；查询指标事实保留）
+  Future<void> deleteConversation(String conversationId) async {
+    final response = await _base.send(
+      (client) =>
+          client.delete(_base.uri('/api/v1/conversations/$conversationId')),
+      expectsNoContent: true,
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(
+        code: 'UNKNOWN',
+        message: '删除会话返回非 204 状态: ${response.statusCode}',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+}

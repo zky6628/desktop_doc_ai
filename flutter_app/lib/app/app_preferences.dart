@@ -18,6 +18,7 @@ class AppPreferences {
   static const _keyWindowHeight = 'ui.window_height';
   static const _keyClientInstanceId = 'client.instance_id';
   static const _keyLastKbId = 'ui.last_kb_id';
+  static const _keyLastConversationId = 'ui.last_conversation_id';
 
   /// 默认窗口尺寸与默认进入页面
   static const Size defaultWindowSize = Size(1280, 720);
@@ -96,5 +97,17 @@ class AppPreferences {
     _lastKbIdCache = kbId;
     if (kbId == null) return _prefs.remove(_keyLastKbId);
     return _prefs.setString(_keyLastKbId, kbId);
+  }
+
+  String? _lastConversationIdCache;
+
+  /// 最近选择的会话（重启恢复；失效 ID 由问答页校验后忽略并清理）
+  String? get lastConversationId =>
+      _lastConversationIdCache ?? _prefs.getString(_keyLastConversationId);
+
+  Future<void> saveLastConversationId(String? conversationId) {
+    _lastConversationIdCache = conversationId;
+    if (conversationId == null) return _prefs.remove(_keyLastConversationId);
+    return _prefs.setString(_keyLastConversationId, conversationId);
   }
 }

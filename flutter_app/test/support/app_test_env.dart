@@ -1,53 +1,31 @@
-// 测试环境支撑：临时 Hive 目录、mock 偏好与应用装配的公共入口。
+// 测试环境支撑：mock 偏好与应用装配的公共入口。
 //
-// 说明：widget test 的 FakeAsync 环境会拦截全部 HTTP 请求（固定返回 400），
-// 因此连接必然走失败路径；Hive boxes 在真实异步环境中预打开，
-// 避免真实文件 IO 在 FakeAsync 中无法完成。
+// 说明：widget test 的 FakeAsync 环境会拦截全部 HTTP 请求（固定返回
+// 400），因此请求必然走失败路径；问答页在无缓存知识库时直接渲染空态，
+// 不发起网络请求。
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hive/hive.dart';
-import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:desktop_document_ai/api/conversation_api_client.dart';
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
+import 'package:desktop_document_ai/api/query_api_client.dart';
 import 'package:desktop_document_ai/app/app_preferences.dart';
 import 'package:desktop_document_ai/app/router.dart';
 import 'package:desktop_document_ai/controllers/app_shell_controller.dart';
 import 'package:desktop_document_ai/main.dart';
-import 'package:desktop_document_ai/models/drop_file_model.dart';
-
-/// path_provider 平台接口 mock
-/// 将应用文档目录指向测试专用临时目录，避免测试触碰用户真实 Hive 数据
-class _MockPathProviderPlatform extends PathProviderPlatform {
-  _MockPathProviderPlatform(this.tempPath);
-
-  final String tempPath;
-
-  @override
-  Future<String?> getApplicationDocumentsPath() async => tempPath;
-}
 
 class AppTestEnv {
   AppTestEnv._();
 
-  /// 初始化临时 Hive 目录并预打开应用使用的 boxes
-  static Future<Directory> setUp() async {
-    final tempDir = await Directory.systemTemp.createTemp('rag_chat_db_test');
-    PathProviderPlatform.instance = _MockPathProviderPlatform(tempDir.path);
+  /// 保留临时目录生命周期形状（历史测试签名）；业务路径已不再依赖
+  static Future<Directory> setUp() =>
+      Directory.systemTemp.createTemp('workbench_test');
 
-    // Hive 为全局单例，openBox 幂等；预打开使被测代码在 FakeAsync
-    // 环境中 openBox 时直接命中已打开的实例
-    Hive.init(tempDir.path);
-    await Hive.openBox<Map>('conversations');
-    await Hive.openBox<Map>('messages');
-    await Hive.openBox<Map>('files');
-    return tempDir;
-  }
-
-  /// 清理临时目录；Hive 关闭是异步的，文件占用时允许残留
+  /// 清理临时目录；文件占用时允许残留
   static Future<void> tearDown(Directory tempDir) async {
     try {
       await tempDir.delete(recursive: true);
@@ -59,38 +37,35 @@ class AppTestEnv {
 
 /// 以与 main() 相同的装配方式构建应用。
 ///
-/// 服务探测控制器不调用 start()，避免测试结束后残留周期定时器。
+/// 服务探测控制器不调用 start()，避免测试结束后残留周期定时器；
+/// 客户端为真实实现但无后端可达，页面按失败路径渲染。
 Future<Widget> buildWorkbenchApp({
   Map<String, Object> preferences = const {},
 }) async {
   SharedPreferences.setMockInitialValues(preferences);
   final appPreferences = await AppPreferences.load();
-  return _assemble(appPreferences, bundle: null);
+  return _assemble(
+    appPreferences,
+    knowledgeClient: KnowledgeApiClient(),
+  );
 }
 
-/// 构建带知识库域客户端的应用（路由注入 ApiBundle）
+/// 构建带指定知识库域客户端的应用（路由注入 ApiBundle）
 Future<Widget> buildWorkbenchAppWithKnowledge({
   Map<String, Object> preferences = const {},
   required KnowledgeApiClient knowledgeClient,
 }) async {
   SharedPreferences.setMockInitialValues(preferences);
   final appPreferences = await AppPreferences.load();
-  return _assemble(
-    appPreferences,
-    bundle: ApiBundle(
-      preferences: appPreferences,
-      knowledgeClient: knowledgeClient,
-    ),
-  );
+  return _assemble(appPreferences, knowledgeClient: knowledgeClient);
 }
 
 Future<Widget> _assemble(
   AppPreferences appPreferences, {
-  required ApiBundle? bundle,
+  required KnowledgeApiClient knowledgeClient,
 }) async {
   return MultiProvider(
     providers: [
-      ChangeNotifierProvider(create: (context) => DropFileModel()),
       ChangeNotifierProvider<AppShellController>(
         create: (context) => AppShellController(),
       ),
@@ -99,7 +74,14 @@ Future<Widget> _assemble(
       router: createRouter(
         initialLocation: appPreferences.lastLocation,
         preferences: appPreferences,
-        bundle: bundle,
+        bundle: ApiBundle(
+          preferences: appPreferences,
+          knowledgeClient: knowledgeClient,
+          queryClient: QueryApiClient(
+            instanceId: appPreferences.clientInstanceId,
+          ),
+          conversationClient: ConversationApiClient(),
+        ),
       ),
       themeMode: appPreferences.themeMode,
       preferences: appPreferences,
@@ -107,21 +89,25 @@ Future<Widget> _assemble(
   );
 }
 
-/// 等待问答页连接流程走完并清除 SnackBar 定时器，避免测试结束后残留
+/// 等待问答页渲染稳定并清除错误 SnackBar 定时器，避免测试结束后残留
 Future<void> settleChatConnection(WidgetTester tester) async {
   await tester.pump();
 
-  // 连接与初始化的完成回调需要真实事件循环轮转，分批等待最多约 2 秒，
-  // 直到问答页状态稳定
+  // 页面初始化（含失败路径）的完成回调需要真实事件循环轮转，分批
+  // 等待最多约 2 秒，直到问答页空态或骨架渲染出现
   for (var i = 0; i < 20; i++) {
     await tester.runAsync(() async {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     });
     await tester.pump();
-    if (find.text('智能问答').evaluate().isNotEmpty) break;
+    final settled =
+        find.text('选择一个知识库开始问答').evaluate().isNotEmpty ||
+            find.text('输入问题，开始与知识库对话').evaluate().isNotEmpty ||
+            find.text('前往知识库').evaluate().isNotEmpty;
+    if (settled) break;
   }
 
-  // 推进虚拟时间：清除连接失败路径下 SnackBar 的 4 秒展示 timer 及退场动画
+  // 推进虚拟时间：清除错误路径下 SnackBar 的 4 秒展示 timer 及退场动画
   await tester.pump(const Duration(seconds: 6));
   await tester.pump();
 }

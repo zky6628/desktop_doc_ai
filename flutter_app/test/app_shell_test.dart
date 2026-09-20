@@ -42,16 +42,16 @@ void main() {
     await tester.pumpWidget(await buildWorkbenchApp());
     await settleChatConnection(tester);
 
-    // 切到知识库占位页
+    // 切到知识库页（无后端：知识库列表空态）
     await tester.tap(railIcon(Icons.library_books_outlined).first);
     await tester.pumpAndSettle();
-    expect(find.text('知识库与文档管理将在后续任务提供'), findsOneWidget);
+    expect(find.text('选择或创建一个知识库开始管理文档'), findsOneWidget);
     expect(find.text('未选择知识库'), findsOneWidget);
 
     // 切回问答：IndexedStack 分支不重建，页面内容仍在
     await tester.tap(railIcon(Icons.forum_outlined).first);
     await tester.pumpAndSettle();
-    expect(find.text('智能问答'), findsOneWidget);
+    expect(find.text('选择一个知识库开始问答'), findsOneWidget);
   });
 
   testWidgets('宽档显示扩展导航，中档与紧凑档为图标导航且无溢出', (WidgetTester tester) async {

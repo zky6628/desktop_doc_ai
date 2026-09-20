@@ -1,5 +1,5 @@
 // 应用主界面 smoke 测试：验证 AppShell 与问答页在无真实后端的情况下
-// 完成初始化并渲染骨架，同时覆盖连接失败路径（初始化异常不阻断 UI）。
+// 完成初始化并渲染骨架（无缓存知识库时空态可恢复，不卡加载）。
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -21,8 +21,9 @@ void main() {
     await tester.pumpWidget(await buildWorkbenchApp());
     await settleChatConnection(tester);
 
-    // AppShell 顶栏与问答页内容正常渲染（连接失败时 UI 同样恢复，不卡加载页）
+    // AppShell 顶栏与问答页空态正常渲染
     expect(find.text('未选择知识库'), findsOneWidget);
-    expect(find.text('智能问答'), findsOneWidget);
+    expect(find.text('选择一个知识库开始问答'), findsOneWidget);
+    expect(find.text('新建会话'), findsOneWidget);
   });
 }

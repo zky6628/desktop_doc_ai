@@ -28,6 +28,23 @@ Future<KnowledgeApiClient> mockKnowledgeClient() async {
   return KnowledgeApiClient(
     client: MockClient((request) async {
       final path = request.url.path;
+      if (path == '/api/v1/knowledge-bases/kb-1') {
+        // 问答页启动恢复最近 KB 时消费
+        return envelope({
+          'id': 'kb-1',
+          'name': '确认测试库',
+          'description': null,
+          'status': 'active',
+          'deleted_at': null,
+          'delete_requested_at': null,
+          'created_at': '2026-09-20T00:00:00+00:00',
+          'updated_at': '2026-09-20T00:00:00+00:00',
+        });
+      }
+      if (path == '/api/v1/conversations') {
+        // 问答页会话列表（该测试不关心会话事实）
+        return envelope({'items': [], 'next_cursor': null});
+      }
       if (path == '/api/v1/knowledge-bases') {
         return envelope({
           'items': [

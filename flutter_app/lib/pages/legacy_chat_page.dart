@@ -230,7 +230,7 @@ class _LegacyChatPageState extends State<LegacyChatPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const DropZone(height: 120),
+                DropZone(height: 120, onFilesDropped: (_) {}),
                 const SizedBox(height: 16),
                 Expanded(child: _buildChatPanel()),
               ],

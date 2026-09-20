@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../api/conversation_api_client.dart';
 import '../api/knowledge_api_client.dart';
+import '../api/query_api_client.dart';
+import '../pages/chat_page.dart';
 import '../pages/document_detail_page.dart';
 import '../pages/knowledge_bases_page.dart';
-import '../pages/legacy_chat_page.dart';
 import '../pages/placeholder_page.dart';
 import '../pages/task_center_page.dart';
 import 'app_preferences.dart';
@@ -15,20 +17,24 @@ class ApiBundle {
   ApiBundle({
     required this.preferences,
     required this.knowledgeClient,
+    required this.queryClient,
+    required this.conversationClient,
   });
 
   final AppPreferences preferences;
   final KnowledgeApiClient knowledgeClient;
+  final QueryApiClient queryClient;
+  final ConversationApiClient conversationClient;
 }
 
 /// 工作台路由：五个一级页面以 IndexedStack 分支承载，切换互不丢状态
 ///
-/// 页面携带的 query 参数（如 /chat?kb=&conversation=）由各页面在
-/// 对应任务接入时从 [GoRouterState] 读取，路由表无需逐参数声明。
+/// 页面携带的 query 参数（如 /chat?kb=&conversation=）由各页面从
+/// [GoRouterState] 读取，路由表无需逐参数声明。
 GoRouter createRouter({
   required String initialLocation,
   required AppPreferences preferences,
-  ApiBundle? bundle,
+  required ApiBundle bundle,
 }) {
   return GoRouter(
     initialLocation: _sanitizeLocation(initialLocation),
@@ -43,7 +49,15 @@ GoRouter createRouter({
             routes: [
               GoRoute(
                 path: AppShell.locations[0],
-                builder: (context, state) => const LegacyChatPage(),
+                builder: (context, state) => ChatPage(
+                  queryClient: bundle.queryClient,
+                  conversationClient: bundle.conversationClient,
+                  knowledgeClient: bundle.knowledgeClient,
+                  preferences: bundle.preferences,
+                  initialKbId: state.uri.queryParameters['kb'],
+                  initialConversationId:
+                      state.uri.queryParameters['conversation'],
+                ),
               ),
             ],
           ),
@@ -51,32 +65,20 @@ GoRouter createRouter({
             routes: [
               GoRoute(
                 path: AppShell.locations[1],
-                builder: (context, state) => bundle == null
-                    ? const PlaceholderPage(
-                        icon: Icons.library_books_outlined,
-                        title: '知识库',
-                        message: '知识库与文档管理将在后续任务提供',
-                      )
-                    : KnowledgeBasesPage(
-                        knowledgeClient: bundle.knowledgeClient,
-                        preferences: bundle.preferences,
-                      ),
+                builder: (context, state) => KnowledgeBasesPage(
+                  knowledgeClient: bundle.knowledgeClient,
+                  preferences: bundle.preferences,
+                ),
                 routes: [
                   // 契约路由：/knowledge-bases/<kb>/documents/<document>
                   GoRoute(
                     path: ':kbId/documents/:docId',
                     builder: (context, state) {
                       final docId = state.pathParameters['docId']!;
-                      return bundle == null
-                          ? const PlaceholderPage(
-                              icon: Icons.insert_drive_file_outlined,
-                              title: '文档详情',
-                              message: '文档详情将在后续任务提供',
-                            )
-                          : DocumentDetailPage(
-                              knowledgeClient: bundle.knowledgeClient,
-                              documentId: docId,
-                            );
+                      return DocumentDetailPage(
+                        knowledgeClient: bundle.knowledgeClient,
+                        documentId: docId,
+                      );
                     },
                   ),
                 ],
@@ -87,17 +89,11 @@ GoRouter createRouter({
             routes: [
               GoRoute(
                 path: AppShell.locations[2],
-                builder: (context, state) => bundle == null
-                    ? const PlaceholderPage(
-                        icon: Icons.task_alt,
-                        title: '任务中心',
-                        message: '任务队列与事件时间线将在后续任务提供',
-                      )
-                    : TaskCenterPage(
-                        knowledgeClient: bundle.knowledgeClient,
-                        initialState: state.uri.queryParameters['state'],
-                        initialTaskType: state.uri.queryParameters['task_type'],
-                      ),
+                builder: (context, state) => TaskCenterPage(
+                  knowledgeClient: bundle.knowledgeClient,
+                  initialState: state.uri.queryParameters['state'],
+                  initialTaskType: state.uri.queryParameters['task_type'],
+                ),
               ),
             ],
           ),
