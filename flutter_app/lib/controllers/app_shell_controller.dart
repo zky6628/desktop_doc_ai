@@ -38,7 +38,11 @@ class AppShellController extends ChangeNotifier {
   Timer? _timer;
   Timer? _taskTimer;
 
-  /// 当前知识库名称（知识库域接入前为 null，顶栏显示占位文案）
+  /// 当前知识库 ID 与名称（知识库域接入前为 null，顶栏显示占位文案）
+  ///
+  /// ID 供问答页感知"最近选择"变化并自动重载（IndexedStack 分支保活，
+  /// 页面不会重建，需经广播同步跨页事实）
+  String? currentKnowledgeBaseId;
   String? currentKnowledgeBaseName;
 
   /// 后端服务是否可达
@@ -60,9 +64,12 @@ class AppShellController extends ChangeNotifier {
     }
   }
 
-  /// 切换当前知识库（名称仅用于顶栏展示）
-  void setCurrentKnowledgeBase(String? name) {
-    if (currentKnowledgeBaseName == name) return;
+  /// 切换当前知识库（ID 驱动跨页同步，名称仅用于顶栏展示）
+  void setCurrentKnowledgeBase(String? id, String? name) {
+    if (currentKnowledgeBaseId == id && currentKnowledgeBaseName == name) {
+      return;
+    }
+    currentKnowledgeBaseId = id;
     currentKnowledgeBaseName = name;
     notifyListeners();
   }

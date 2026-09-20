@@ -98,6 +98,9 @@ class FakeConversationApiClient implements ConversationApiClient {
   FakeConversationApiClient();
 
   List<ConversationSummaryDto> conversations = const [];
+
+  /// 按知识库区分的会话列表（切库刷新用例；null 时回落到单列表）
+  Map<String, List<ConversationSummaryDto>>? conversationsByKb;
   Map<String, List<ConversationMessageDto>> messagesByConversation = {};
   ApiException? listError;
   ApiException? messagesError;
@@ -111,7 +114,9 @@ class FakeConversationApiClient implements ConversationApiClient {
   }) async {
     final error = listError;
     if (error != null) throw error;
-    return ApiPage(items: conversations, nextCursor: null);
+    final byKb = conversationsByKb;
+    final items = byKb != null ? (byKb[kbId] ?? const []) : conversations;
+    return ApiPage(items: items, nextCursor: null);
   }
 
   @override
@@ -139,14 +144,34 @@ class FakeKnowledgeApiClient extends KnowledgeApiClient {
   FakeKnowledgeApiClient();
 
   KbDto? kb;
+
+  /// 按库 ID 区分的详情返回（切库用例；null 时回落到单库）
+  Map<String, KbDto>? kbById;
+
+  /// 指定库的详情响应挂起闸门（并发切库时序用例）
+  Map<String, Completer<void>> resolveGates = {};
   ApiException? error;
   int calls = 0;
 
   @override
   Future<KbDto> getKnowledgeBase(String kbId) async {
     calls += 1;
+    final gate = resolveGates[kbId];
+    if (gate != null) await gate.future;
     final error = this.error;
     if (error != null) throw error;
+    final byId = kbById;
+    if (byId != null) {
+      final kb = byId[kbId];
+      if (kb == null) {
+        throw ApiException(
+          code: 'KNOWLEDGE_BASE_NOT_FOUND',
+          message: '知识库不存在',
+          statusCode: 404,
+        );
+      }
+      return kb;
+    }
     return kb!;
   }
 }
@@ -156,9 +181,10 @@ class FakeKnowledgeApiClient extends KnowledgeApiClient {
 const _kbId = 'kb-1';
 const _conversationId = 'conv-1';
 
-KbDto _kb({bool deleted = false}) => KbDto(
-      id: _kbId,
-      name: '测试知识库',
+KbDto _kb({String id = _kbId, String name = '测试知识库', bool deleted = false}) =>
+    KbDto(
+      id: id,
+      name: name,
       description: null,
       status: deleted ? 'deleted' : 'active',
       deletedAt: deleted ? '2026-09-21T00:00:00Z' : null,
@@ -166,9 +192,10 @@ KbDto _kb({bool deleted = false}) => KbDto(
       updatedAt: '2026-09-21T00:00:00Z',
     );
 
-ConversationSummaryDto _summary(String id) => ConversationSummaryDto(
+ConversationSummaryDto _summary(String id, {String kbId = _kbId}) =>
+    ConversationSummaryDto(
       id: id,
-      knowledgeBaseId: _kbId,
+      knowledgeBaseId: kbId,
       title: null,
       createdAt: '2026-09-21T00:00:00Z',
       updatedAt: '2026-09-21T00:00:00Z',
@@ -281,6 +308,9 @@ void main() {
     await _waitFor(
       () => controller.messages.length > 1 && controller.messages[1].content.isNotEmpty,
     );
+    // 首帧渲染滞后于 token 到达（真实链路为 post-frame 回调）；显式等待
+    // 跨过系统时钟粒度，避免两个时间戳同 tick 采样导致顺序断言抖动
+    await Future<void>.delayed(const Duration(milliseconds: 25));
     controller.markFirstTokenRendered();
     await _waitFor(() => !controller.generating);
 
@@ -513,5 +543,96 @@ void main() {
     // 草稿发送不携带会话 ID，202 回带后绑定新建会话
     expect(harness.query.lastCreateConversationId, isNull);
     expect(controller.currentConversationId, 'conv-new');
+  });
+
+  test('切库后会话列表刷新为新库列表，最近会话缓存跨库失效回退列表最新', () async {
+    final harness = Harness();
+    harness.knowledge.kbById = {
+      'kb-a': _kb(id: 'kb-a', name: '库甲'),
+      'kb-b': _kb(id: 'kb-b', name: '库乙'),
+    };
+    harness.conversations.conversationsByKb = {
+      'kb-a': [_summary('conv-a1', kbId: 'kb-a'), _summary('conv-a2', kbId: 'kb-a')],
+      'kb-b': [_summary('conv-b1', kbId: 'kb-b')],
+    };
+    harness.conversations.messagesByConversation = {
+      'conv-a1': [_message('user', '甲库的问题')],
+      'conv-b1': [_message('user', '乙库的问题')],
+    };
+    final controller = await harness.build(
+      initialKbId: 'kb-a',
+      initialConversationId: 'conv-a1',
+    );
+    expect(controller.currentConversationId, 'conv-a1');
+
+    await controller.loadInitial(kbId: 'kb-b');
+
+    expect(controller.knowledgeBase?.id, 'kb-b');
+    expect(controller.conversations.map((c) => c.id), ['conv-b1']);
+    // 旧库的最近会话缓存不跨库生效，回退到新库列表最新
+    expect(controller.currentConversationId, 'conv-b1');
+    expect(controller.messages.map((m) => m.content), ['乙库的问题']);
+  });
+
+  test('并发切库以最新请求为准，旧库慢响应不覆盖新库状态', () async {
+    final harness = Harness();
+    final slowGate = Completer<void>();
+    harness.knowledge.kbById = {
+      'kb-a': _kb(id: 'kb-a', name: '慢库'),
+      'kb-b': _kb(id: 'kb-b', name: '快库'),
+    };
+    harness.knowledge.resolveGates['kb-a'] = slowGate;
+    harness.conversations.conversationsByKb = {
+      'kb-a': [_summary('conv-a', kbId: 'kb-a')],
+      'kb-b': [_summary('conv-b', kbId: 'kb-b')],
+    };
+    harness.conversations.messagesByConversation = {
+      'conv-a': [_message('user', '慢库问题')],
+      'conv-b': [_message('user', '快库问题')],
+    };
+    final controller = await harness.build(initialKbId: 'kb-b');
+    expect(controller.knowledgeBase?.id, 'kb-b');
+
+    // 先发起慢库 A，再发起快库 B；B 完成后释放 A 的响应
+    final slow = controller.loadInitial(kbId: 'kb-a');
+    await controller.loadInitial(kbId: 'kb-b');
+    slowGate.complete();
+    await slow;
+
+    expect(controller.knowledgeBase?.id, 'kb-b');
+    expect(controller.conversations.map((c) => c.id), ['conv-b']);
+  });
+
+  test('生成中切库先挂起，终态收尾后自动补载新库', () async {
+    final harness = Harness();
+    final tokenGate = Completer<List<int>>();
+    final doneGate = Completer<List<int>>();
+    harness.query.chunks = () => [tokenGate.future, doneGate.future];
+    harness.knowledge.kbById = {
+      _kbId: _kb(),
+      'kb-c': _kb(id: 'kb-c', name: '生成中切来的库'),
+    };
+    harness.conversations.conversationsByKb = {
+      _kbId: [_summary(_conversationId)],
+      'kb-c': [_summary('conv-c', kbId: 'kb-c')],
+    };
+    harness.conversations.messagesByConversation = {
+      _conversationId: [_message('user', '旧库问题')],
+      'conv-c': [_message('user', '新库问题')],
+    };
+    final controller = await harness.build(initialConversationId: _conversationId);
+
+    await controller.send('问题');
+    expect(controller.generating, isTrue);
+
+    // 生成期间切库：当前上下文保持不动，请求挂起为待补载
+    await controller.loadInitial(kbId: 'kb-c');
+    expect(controller.knowledgeBase?.id, _kbId);
+
+    doneGate.complete(utf8.encode(_sseFrame('done', {}, 2)));
+    await _waitFor(() => controller.knowledgeBase?.id == 'kb-c');
+
+    expect(controller.generating, isFalse);
+    expect(controller.conversations.map((c) => c.id), ['conv-c']);
   });
 }

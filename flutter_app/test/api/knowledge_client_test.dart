@@ -160,15 +160,20 @@ void main() {
       return envelope({'items': [], 'next_cursor': null});
     });
 
+    String? shellKbId;
     String? shellKbName;
     final controller = KnowledgeBaseController(
       knowledgeClient: client,
       preferences: preferences,
-      onCurrentKnowledgeBase: (name) => shellKbName = name,
+      onCurrentKnowledgeBase: (id, name) {
+        shellKbId = id;
+        shellKbName = name;
+      },
     );
     await controller.loadInitial();
 
     expect(controller.currentKb?.id, 'kb-1');
+    expect(shellKbId, 'kb-1');
     expect(shellKbName, '恢复库');
     expect(preferences.lastKnowledgeBaseId, 'kb-1');
     controller.dispose();

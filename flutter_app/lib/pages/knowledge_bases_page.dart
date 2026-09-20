@@ -42,9 +42,9 @@ class _KnowledgeBasesPageState extends State<KnowledgeBasesPage> {
     _controller = KnowledgeBaseController(
       knowledgeClient: widget.knowledgeClient,
       preferences: widget.preferences,
-      onCurrentKnowledgeBase: (name) {
+      onCurrentKnowledgeBase: (id, name) {
         final shell = context.read<AppShellController>();
-        shell.setCurrentKnowledgeBase(name);
+        shell.setCurrentKnowledgeBase(id, name);
       },
     );
     _controller.addListener(_onControllerChanged);

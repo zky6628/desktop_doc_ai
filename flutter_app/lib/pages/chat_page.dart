@@ -47,6 +47,7 @@ class _ChatPageState extends State<ChatPage> {
   late final ChatController _controller;
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _messagesScroll = ScrollController();
+  AppShellController? _shell;
 
   // 引用抽屉状态：当前展示的消息与高亮引用编号
   bool _drawerOpen = false;
@@ -66,9 +67,11 @@ class _ChatPageState extends State<ChatPage> {
       conversationClient: widget.conversationClient,
       knowledgeClient: widget.knowledgeClient,
       preferences: widget.preferences,
-      onKnowledgeBaseResolved: (name) {
+      onKnowledgeBaseResolved: (id, name) {
         if (mounted) {
-          context.read<AppShellController>().setCurrentKnowledgeBase(name);
+          context
+              .read<AppShellController>()
+              .setCurrentKnowledgeBase(id, name);
         }
       },
     );
@@ -82,7 +85,29 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final shell = context.read<AppShellController>();
+    if (!identical(shell, _shell)) {
+      _shell?.removeListener(_onShellChanged);
+      _shell = shell;
+      shell.addListener(_onShellChanged);
+    }
+  }
+
+  /// 知识库页切库广播：问答页随最新选择自动重载
+  ///
+  /// IndexedStack 分支保活，页面不会重建，启动时的 loadInitial
+  /// 覆盖不到此后发生的跨页切换，需监听壳层广播补载
+  void _onShellChanged() {
+    final id = _shell?.currentKnowledgeBaseId;
+    if (id == null || id == _controller.knowledgeBase?.id) return;
+    unawaited(_controller.loadInitial(kbId: id));
+  }
+
+  @override
   void dispose() {
+    _shell?.removeListener(_onShellChanged);
     _controller.removeListener(_onControllerChanged);
     _controller.dispose();
     _inputController.dispose();
@@ -211,7 +236,8 @@ class _ChatPageState extends State<ChatPage> {
           currentConversationId: _controller.currentConversationId,
           loading: _controller.conversationsLoading,
           hasMore: _controller.hasMoreConversations,
-          enabled: !readOnly && !_controller.generating,
+          // 未选择知识库时新建仅会切换到草稿空态（无感知），直接禁用
+          enabled: kb != null && !readOnly && !_controller.generating,
           error: _controller.listError?.message,
           onSelect: (id) => unawaited(_controller.selectConversation(id)),
           onNewConversation: _controller.newConversation,

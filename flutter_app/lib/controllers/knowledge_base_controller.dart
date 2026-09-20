@@ -29,7 +29,9 @@ class KnowledgeBaseController extends ChangeNotifier {
 
   final KnowledgeApiClient _knowledge;
   final AppPreferences preferences;
-  final void Function(String? kbName)? onCurrentKnowledgeBase;
+
+  /// 当前知识库变化广播（ID 供问答页自动重载，名称供顶栏展示）
+  final void Function(String? kbId, String? kbName)? onCurrentKnowledgeBase;
 
   // 三类列表请求各自独立防过期（并发刷新互不作废）
   final _kbsGuard = _LatestRequestGuard();
@@ -94,7 +96,7 @@ class KnowledgeBaseController extends ChangeNotifier {
     documents = [];
     _documentsCursor = null;
     documentsHasMore = false;
-    onCurrentKnowledgeBase?.call(kb.name);
+    onCurrentKnowledgeBase?.call(kb.id, kb.name);
     unawaited(preferences.saveLastKnowledgeBaseId(kb.id));
     notifyListeners();
     await reloadDocuments();
@@ -199,7 +201,7 @@ class KnowledgeBaseController extends ChangeNotifier {
       await reloadKnowledgeBases();
       if (currentKb?.id == kb.id) {
         currentKb = updated;
-        onCurrentKnowledgeBase?.call(updated.name);
+        onCurrentKnowledgeBase?.call(updated.id, updated.name);
       }
       notifyListeners();
       return true;
@@ -214,7 +216,7 @@ class KnowledgeBaseController extends ChangeNotifier {
       await _knowledge.deleteKnowledgeBase(kb.id, idempotencyKey: _newKey());
       currentKb = null;
       documents = [];
-      onCurrentKnowledgeBase?.call(null);
+      onCurrentKnowledgeBase?.call(null, null);
       unawaited(preferences.saveLastKnowledgeBaseId(null));
       await reloadKnowledgeBases();
       return true;

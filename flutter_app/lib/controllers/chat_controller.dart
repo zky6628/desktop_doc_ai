@@ -56,14 +56,15 @@ class ChatController extends ChangeNotifier {
        _conversations = conversationClient,
        _knowledge = knowledgeClient;
 
-  /// 知识库解析完成回调（顶栏名称联动由页面桥接到 AppShellController）
-  final void Function(String? name)? onKnowledgeBaseResolved;
+  /// 知识库解析完成回调（页面桥接到 AppShellController 实现跨页同步）
+  final void Function(String? kbId, String? name)? onKnowledgeBaseResolved;
 
   final QueryApiClient _query;
   final ConversationApiClient _conversations;
   final KnowledgeApiClient _knowledge;
   final AppPreferences _preferences;
 
+  final _loadGuard = _LatestRequestGuard();
   final _listGuard = _LatestRequestGuard();
   final _messagesGuard = _LatestRequestGuard();
 
@@ -112,52 +113,80 @@ class ChatController extends ChangeNotifier {
 
   ApiException? actionError;
 
+  /// 生成期间知识库页切库的待补载 KB（生成结束自动重载）
+  String? _pendingKbId;
+
   // ===================== 初始化与恢复 =====================
 
   /// 初始化：路由 query 参数优先，其次最近 KB+会话，失效即清理缓存
+  ///
+  /// 可重入（IndexedStack 分支保活，知识库页切库后经广播重新进入）：
+  /// 旧序列在 await 后被新序列取代时静默放弃；生成中先记下待切换
+  /// KB，生成结束自动补载，避免切库请求丢失
   Future<void> loadInitial({String? kbId, String? conversationId}) async {
+    if (generating) {
+      _pendingKbId = kbId;
+      return;
+    }
+    final seq = _loadGuard.begin();
     kbId ??= _preferences.lastKnowledgeBaseId;
     if (kbId == null) {
-      onKnowledgeBaseResolved?.call(null);
+      onKnowledgeBaseResolved?.call(null, null);
       return;
     }
     kbLoading = true;
     notifyListeners();
-    final kb = await _resolveKnowledgeBase(kbId);
+    final (kb, error, notFound) = await _resolveKnowledgeBase(kbId);
+    // 旧序列在任何 await 后被新序列取代时静默放弃，不写任何共享状态
+    if (!_loadGuard.isLatest(seq)) return;
     kbLoading = false;
+    if (kb != null) {
+      knowledgeBase = kb;
+      kbDeleted = kb.deletedAt != null;
+      unawaited(_preferences.saveLastKnowledgeBaseId(kb.id));
+      onKnowledgeBaseResolved?.call(kb.id, kb.name);
+    } else if (notFound) {
+      // 失效 KB：清理缓存回退空态（UI 规范 §2）
+      knowledgeBase = null;
+      kbDeleted = false;
+      unawaited(_preferences.saveLastKnowledgeBaseId(null));
+      unawaited(_preferences.saveLastConversationId(null));
+      onKnowledgeBaseResolved?.call(null, null);
+    } else {
+      actionError = error;
+    }
     notifyListeners();
     if (kb == null) return;
     await reloadConversations();
+    if (!_loadGuard.isLatest(seq)) return;
     await _restoreConversation(conversationId);
   }
 
-  Future<KbDto?> _resolveKnowledgeBase(String kbId) async {
+  /// 知识库详情取数（纯查询，不写控制器状态）：成功/404/其他异常三态
+  ///
+  /// 共享状态（knowledgeBase/缓存/回调）由调用方在防过期检查通过后
+  /// 统一落盘，避免慢响应覆盖并发切库的最新状态
+  Future<(KbDto?, ApiException?, bool)> _resolveKnowledgeBase(
+    String kbId,
+  ) async {
     try {
-      final kb = await _knowledge.getKnowledgeBase(kbId);
-      knowledgeBase = kb;
-      kbDeleted = kb.deletedAt != null;
-      _preferences.saveLastKnowledgeBaseId(kb.id);
-      onKnowledgeBaseResolved?.call(kb.name);
-      return kb;
+      return (await _knowledge.getKnowledgeBase(kbId), null, false);
     } on ApiException catch (exc) {
-      if (exc.statusCode == 404) {
-        // 失效 KB：清理缓存回退空态（UI 规范 §2）
-        knowledgeBase = null;
-        kbDeleted = false;
-        unawaited(_preferences.saveLastKnowledgeBaseId(null));
-        unawaited(_preferences.saveLastConversationId(null));
-        onKnowledgeBaseResolved?.call(null);
-      } else {
-        actionError = exc;
-      }
-      return null;
+      return (null, exc, exc.statusCode == 404);
     }
   }
 
   Future<void> _restoreConversation(String? conversationId) async {
+    // 最近会话缓存全局持久化，切库后旧库会话不属于当前库：仅当缓存
+    // 出现在当前库会话列表中才恢复，否则回退列表最新或草稿
+    final remembered = _preferences.lastConversationId;
+    final rememberedInKb =
+        remembered != null && conversations.any((item) => item.id == remembered)
+        ? remembered
+        : null;
     final target =
         conversationId ??
-        _preferences.lastConversationId ??
+        rememberedInKb ??
         (conversations.isNotEmpty ? conversations.first.id : null);
     if (target == null) {
       _resetToDraft();
@@ -526,6 +555,12 @@ class ChatController extends ChangeNotifier {
     notifyListeners();
     // 会话列表静默刷新：新草稿会话落地/活跃会话顶置
     unawaited(reloadConversations());
+    // 生成期间知识库页发生的切库在此补载
+    final pending = _pendingKbId;
+    _pendingKbId = null;
+    if (pending != null) {
+      unawaited(loadInitial(kbId: pending));
+    }
   }
 
   /// 终态后上报客户端遥测（时间戳齐全才上报；上报失败不影响界面）
