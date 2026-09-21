@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import 'api_client_base.dart';
 import 'dto/knowledge_dto.dart';
+import '../app/server_address.dart';
 
 /// 待上传文件的输入（来自文件选择器或拖拽落地的本地路径）
 class UploadFileInput {
@@ -18,8 +19,8 @@ class UploadFileInput {
 /// 信封与错误解析复用 [ApiClientBase]；上传为 multipart 批量长操作
 /// （202，逐文件独立接受或拒绝）。
 class KnowledgeApiClient {
-  KnowledgeApiClient({http.Client? client, Uri? baseUrl})
-    : _base = ApiClientBase(client: client, baseUrl: baseUrl);
+  KnowledgeApiClient({http.Client? client, required ServerAddressStore address})
+    : _base = ApiClientBase(client: client, address: address);
 
   final ApiClientBase _base;
 

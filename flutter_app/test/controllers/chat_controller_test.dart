@@ -13,10 +13,12 @@ import 'package:desktop_document_ai/api/api_error.dart';
 import 'package:desktop_document_ai/api/conversation_api_client.dart';
 import 'package:desktop_document_ai/api/dto/conversation_dto.dart';
 import 'package:desktop_document_ai/api/dto/knowledge_dto.dart';
+import 'package:desktop_document_ai/api/dto/metrics_dto.dart';
 import 'package:desktop_document_ai/api/dto/query_dto.dart';
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
 import 'package:desktop_document_ai/api/query_api_client.dart';
 import 'package:desktop_document_ai/app/app_preferences.dart';
+import 'package:desktop_document_ai/app/server_address.dart';
 import 'package:desktop_document_ai/controllers/chat_controller.dart';
 
 // ===================== 脚本化客户端替身 =====================
@@ -92,6 +94,11 @@ class FakeQueryApiClient implements QueryApiClient {
     );
     return (response, () {});
   }
+
+  @override
+  Future<QueryMetricsSummary> queryMetrics({String? knowledgeBaseId}) async {
+    throw UnimplementedError('问答页不消费聚合指标');
+  }
 }
 
 class FakeConversationApiClient implements ConversationApiClient {
@@ -146,7 +153,8 @@ class FakeConversationApiClient implements ConversationApiClient {
 }
 
 class FakeKnowledgeApiClient extends KnowledgeApiClient {
-  FakeKnowledgeApiClient();
+  FakeKnowledgeApiClient()
+    : super(address: ServerAddressStore(Uri.parse('http://127.0.0.1:8000')));
 
   KbDto? kb;
 

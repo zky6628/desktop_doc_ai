@@ -9,6 +9,7 @@ import 'package:http/testing.dart';
 import 'package:desktop_document_ai/api/api_error.dart';
 import 'package:desktop_document_ai/api/dto/query_dto.dart';
 import 'package:desktop_document_ai/api/query_api_client.dart';
+import 'package:desktop_document_ai/app/server_address.dart';
 
 /// 构造 v1 信封响应体（UTF-8 字节承载中文，需声明 charset 供 body 解码）
 http.Response envelopeResponse(
@@ -45,7 +46,7 @@ QueryApiClient clientWith(
 }) {
   return QueryApiClient(
     client: MockClient(handler),
-    baseUrl: Uri.parse('http://127.0.0.1:8000'),
+    address: ServerAddressStore(Uri.parse('http://127.0.0.1:8000')),
     instanceId: instanceId,
   );
 }
@@ -205,12 +206,98 @@ void main() {
     });
   });
 
+  group('queryMetrics', () {
+    test('解析聚合指标并透传知识库筛选', () async {
+      http.Request? captured;
+      final client = clientWith((request) async {
+        captured = request;
+        return envelopeResponse(200, envelope(success: true, data: {
+          'p50_ttft_ms': 700,
+          'p95_ttft_ms': 1800,
+          'p99_ttft_ms': 2400,
+          'ttft_sample_size': 3,
+          'total': 5,
+          'completed': 3,
+          'failed': 1,
+          'cancelled': 1,
+          'refused': 1,
+          'degraded': 1,
+          'failure_rate': 0.2,
+          'input_tokens': 1000,
+          'output_tokens': 200,
+        }));
+      });
+
+      final metrics = await client.queryMetrics(knowledgeBaseId: 'kb-1');
+
+      expect(captured!.url.path, '/api/v1/metrics/queries');
+      expect(captured!.url.queryParameters['knowledge_base_id'], 'kb-1');
+      expect(metrics.p95TtftMs, 1800);
+      expect(metrics.ttftSampleSize, 3);
+      expect(metrics.failureRate, 0.2);
+    });
+
+    test('无样本时分位与失败率为 null', () async {
+      final client = clientWith(
+        (_) async => envelopeResponse(200, envelope(success: true, data: {
+              'p50_ttft_ms': null,
+              'p95_ttft_ms': null,
+              'p99_ttft_ms': null,
+              'ttft_sample_size': 0,
+              'total': 0,
+              'completed': 0,
+              'failed': 0,
+              'cancelled': 0,
+              'refused': 0,
+              'degraded': 0,
+              'failure_rate': null,
+              'input_tokens': 0,
+              'output_tokens': 0,
+            })),
+      );
+
+      final metrics = await client.queryMetrics();
+
+      expect(metrics.p95TtftMs, isNull);
+      expect(metrics.failureRate, isNull);
+      expect(metrics.total, 0);
+    });
+  });
+
+  group('地址切换', () {
+    test('地址源更新后请求立即走新地址', () async {
+      final store = ServerAddressStore(Uri.parse('http://127.0.0.1:8000'));
+      final urls = <Uri>[];
+      final client = QueryApiClient(
+        client: MockClient((request) async {
+          urls.add(request.url);
+          return http.Response('', 204);
+        }),
+        address: store,
+      );
+      Future<void> report() => client.reportClientMetrics(
+            queryId: 'q-1',
+            clientSendAt: DateTime.utc(2026, 9, 20, 1),
+            firstSseTokenReceivedAt: DateTime.utc(2026, 9, 20, 1, 0, 1),
+            firstTokenRenderedAt: DateTime.utc(2026, 9, 20, 1, 0, 2),
+          );
+
+      await report();
+      store.update(Uri.parse('http://127.0.0.1:9000'));
+      await report();
+
+      expect(urls.first.port, 8000);
+      expect(urls.last.port, 9000);
+    });
+  });
+
   group('故障归类', () {
     test('网络异常归类为 NETWORK_ERROR 且可重试', () async {
       final client = QueryApiClient(
         client: MockClient(
           (_) => throw http.ClientException('connection refused'),
         ),
+        address: ServerAddressStore(Uri.parse('http://127.0.0.1:8000')),
       );
 
       await expectLater(

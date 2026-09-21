@@ -6,13 +6,16 @@ import 'api_client_base.dart';
 import 'api_error.dart';
 import 'dto/conversation_dto.dart';
 import 'dto/knowledge_dto.dart';
+import '../app/server_address.dart';
 
 /// 会话域 API 客户端：会话列表/历史消息/删除
 ///
 /// 信封与错误解析复用 [ApiClientBase]；删除为立即生效操作，204 无信封。
 class ConversationApiClient {
-  ConversationApiClient({http.Client? client, Uri? baseUrl})
-    : _base = ApiClientBase(client: client, baseUrl: baseUrl);
+  ConversationApiClient({
+    http.Client? client,
+    required ServerAddressStore address,
+  }) : _base = ApiClientBase(client: client, address: address);
 
   final ApiClientBase _base;
 

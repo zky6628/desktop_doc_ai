@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'server_address.dart';
+
 /// 本地偏好存取：主题模式、最后页面与窗口尺寸
 ///
 /// 仅保存可重建的界面偏好；业务数据一律以后端 API 为权威。
@@ -19,10 +21,12 @@ class AppPreferences {
   static const _keyClientInstanceId = 'client.instance_id';
   static const _keyLastKbId = 'ui.last_kb_id';
   static const _keyLastConversationId = 'ui.last_conversation_id';
+  static const _keyServerBaseUrl = 'server.base_url';
 
-  /// 默认窗口尺寸与默认进入页面
+  /// 默认窗口尺寸、默认进入页面与默认服务地址
   static const Size defaultWindowSize = Size(1280, 720);
   static const String defaultLocation = '/chat';
+  static const String defaultServerBaseUrl = 'http://127.0.0.1:8000';
 
   /// 窗口最小尺寸（与 window_manager 初始化共用，保障紧凑档可用）
   static const Size minWindowSize = Size(720, 560);
@@ -62,6 +66,16 @@ class AppPreferences {
           ThemeMode.system => 'system',
         },
       );
+
+  /// 服务地址（设置页可配置）；写入侧已校验，读取侧异常记录按默认处理
+  Uri get serverBaseUrl {
+    final raw = _prefs.getString(_keyServerBaseUrl) ?? defaultServerBaseUrl;
+    return ServerAddressStore.tryParse(raw) ??
+        Uri.parse(defaultServerBaseUrl);
+  }
+
+  Future<void> saveServerBaseUrl(Uri uri) =>
+      _prefs.setString(_keyServerBaseUrl, uri.toString());
 
   Future<void> saveLastLocation(String location) =>
       _prefs.setString(_keyLastLocation, location);

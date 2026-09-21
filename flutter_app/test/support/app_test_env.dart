@@ -15,7 +15,9 @@ import 'package:desktop_document_ai/api/knowledge_api_client.dart';
 import 'package:desktop_document_ai/api/query_api_client.dart';
 import 'package:desktop_document_ai/app/app_preferences.dart';
 import 'package:desktop_document_ai/app/router.dart';
+import 'package:desktop_document_ai/app/server_address.dart';
 import 'package:desktop_document_ai/controllers/app_shell_controller.dart';
+import 'package:desktop_document_ai/controllers/theme_controller.dart';
 import 'package:desktop_document_ai/main.dart';
 
 class AppTestEnv {
@@ -44,31 +46,43 @@ Future<Widget> buildWorkbenchApp({
 }) async {
   SharedPreferences.setMockInitialValues(preferences);
   final appPreferences = await AppPreferences.load();
+  final addressStore = ServerAddressStore(appPreferences.serverBaseUrl);
   return _assemble(
     appPreferences,
-    knowledgeClient: KnowledgeApiClient(),
+    addressStore: addressStore,
+    knowledgeClient: KnowledgeApiClient(address: addressStore),
   );
 }
 
 /// 构建带指定知识库域客户端的应用（路由注入 ApiBundle）
+///
+/// 注入的客户端由用例自建（通常绑定 MockClient），地址取值不影响
+/// mock 响应；装配层使用偏好派生的独立地址源驱动壳层探测。
 Future<Widget> buildWorkbenchAppWithKnowledge({
   Map<String, Object> preferences = const {},
   required KnowledgeApiClient knowledgeClient,
 }) async {
   SharedPreferences.setMockInitialValues(preferences);
   final appPreferences = await AppPreferences.load();
-  return _assemble(appPreferences, knowledgeClient: knowledgeClient);
+  return _assemble(
+    appPreferences,
+    addressStore: ServerAddressStore(appPreferences.serverBaseUrl),
+    knowledgeClient: knowledgeClient,
+  );
 }
 
 Future<Widget> _assemble(
   AppPreferences appPreferences, {
+  required ServerAddressStore addressStore,
   required KnowledgeApiClient knowledgeClient,
 }) async {
+  final themeController = ThemeController(appPreferences);
   return MultiProvider(
     providers: [
       ChangeNotifierProvider<AppShellController>(
-        create: (context) => AppShellController(),
+        create: (context) => AppShellController(address: addressStore),
       ),
+      ChangeNotifierProvider<ThemeController>.value(value: themeController),
     ],
     child: WorkbenchApp(
       router: createRouter(
@@ -76,14 +90,17 @@ Future<Widget> _assemble(
         preferences: appPreferences,
         bundle: ApiBundle(
           preferences: appPreferences,
+          addressStore: addressStore,
+          themeController: themeController,
           knowledgeClient: knowledgeClient,
           queryClient: QueryApiClient(
+            address: addressStore,
             instanceId: appPreferences.clientInstanceId,
           ),
-          conversationClient: ConversationApiClient(),
+          conversationClient: ConversationApiClient(address: addressStore),
         ),
       ),
-      themeMode: appPreferences.themeMode,
+      themeController: themeController,
       preferences: appPreferences,
     ),
   );

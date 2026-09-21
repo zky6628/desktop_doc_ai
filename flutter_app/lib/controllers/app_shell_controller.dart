@@ -4,30 +4,29 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../api/knowledge_api_client.dart';
+import '../app/server_address.dart';
 
 /// AppShell 全局状态：当前知识库、服务可达性与非终态任务数
 ///
 /// 仅承载壳层展示所需的最小事实；页面级状态由各页面控制器管理。
 /// 服务探测只反映 /ping 可达性，不介入页面内部的连接流程。
 class AppShellController extends ChangeNotifier {
-  /// 后端服务地址仅在设置页可配置（后续任务接入），默认本机服务
-  static final Uri defaultPingUrl = Uri.parse('http://127.0.0.1:8000/ping');
-
   AppShellController({
     http.Client? client,
-    Uri? pingUrl,
+    required this.address,
     this.probeInterval = const Duration(seconds: 30),
     KnowledgeApiClient? knowledgeClient,
     this.taskPollInterval = const Duration(seconds: 10),
-  }) : pingUrl = pingUrl ?? defaultPingUrl,
-       _client = client ?? http.Client(),
+  }) : _client = client ?? http.Client(),
        _ownsClient = client == null,
-       _knowledge = knowledgeClient;
+       _knowledge = knowledgeClient {
+    address.addListener(_onAddressChanged);
+  }
 
   final http.Client _client;
 
-  /// 服务探测地址与轮询间隔（测试可注入缩短节奏或指向 mock 服务）
-  final Uri pingUrl;
+  /// 服务地址单一事实源：探测地址随之派生，变更后立即重探
+  final ServerAddressStore address;
   final Duration probeInterval;
 
   /// 任务数轮询（顶栏徽标）；未注入知识库客户端时不启用
@@ -74,11 +73,16 @@ class AppShellController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onAddressChanged() {
+    // 保存新地址后立即探测，顶栏状态点尽快反映新目标
+    unawaited(_probe());
+  }
+
   Future<void> _probe() async {
     bool online;
     try {
       final response = await _client
-          .get(pingUrl)
+          .get(address.value.replace(path: '/ping'))
           .timeout(const Duration(seconds: 5));
       online = response.statusCode == 200;
     } on Exception {
@@ -106,6 +110,7 @@ class AppShellController extends ChangeNotifier {
 
   @override
   void dispose() {
+    address.removeListener(_onAddressChanged);
     _timer?.cancel();
     _taskTimer?.cancel();
     if (_ownsClient) _client.close();

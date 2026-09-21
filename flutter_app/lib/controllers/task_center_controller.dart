@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import '../api/api_error.dart';
 import '../api/dto/knowledge_dto.dart';
 import '../api/knowledge_api_client.dart';
+import '../utils/request_guard.dart';
 
 /// 任务中心控制器：任务列表（筛选/分页）、详情事件与取消/重试操作
 ///
@@ -16,8 +17,8 @@ class TaskCenterController extends ChangeNotifier {
     : _knowledge = knowledgeClient;
 
   final KnowledgeApiClient _knowledge;
-  final _listGuard = _LatestRequestGuard();
-  final _detailGuard = _LatestRequestGuard();
+  final LatestRequestGuard _listGuard = LatestRequestGuard();
+  final LatestRequestGuard _detailGuard = LatestRequestGuard();
 
   ApiException? error;
 
@@ -206,9 +207,3 @@ class TaskCenterController extends ChangeNotifier {
 
 String _newKey() => const Uuid().v4();
 
-/// 请求序号防过期响应守卫
-class _LatestRequestGuard {
-  int _seq = 0;
-  int begin() => ++_seq;
-  bool isLatest(int seq) => seq == _seq;
-}

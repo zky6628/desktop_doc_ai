@@ -4,24 +4,31 @@ import 'package:go_router/go_router.dart';
 import '../api/conversation_api_client.dart';
 import '../api/knowledge_api_client.dart';
 import '../api/query_api_client.dart';
+import '../controllers/theme_controller.dart';
 import '../pages/chat_page.dart';
 import '../pages/document_detail_page.dart';
+import '../pages/evaluation_page.dart';
 import '../pages/knowledge_bases_page.dart';
-import '../pages/placeholder_page.dart';
+import '../pages/settings_page.dart';
 import '../pages/task_center_page.dart';
 import 'app_preferences.dart';
 import 'app_shell.dart';
+import 'server_address.dart';
 
 /// 前端服务装配：路由页面消费的客户端集合
 class ApiBundle {
   ApiBundle({
     required this.preferences,
+    required this.addressStore,
+    required this.themeController,
     required this.knowledgeClient,
     required this.queryClient,
     required this.conversationClient,
   });
 
   final AppPreferences preferences;
+  final ServerAddressStore addressStore;
+  final ThemeController themeController;
   final KnowledgeApiClient knowledgeClient;
   final QueryApiClient queryClient;
   final ConversationApiClient conversationClient;
@@ -101,10 +108,10 @@ GoRouter createRouter({
             routes: [
               GoRoute(
                 path: AppShell.locations[3],
-                builder: (context, state) => const PlaceholderPage(
-                  icon: Icons.insights_outlined,
-                  title: '评测',
-                  message: '查询指标与评测数据将在后续任务提供',
+                builder: (context, state) => EvaluationPage(
+                  queryClient: bundle.queryClient,
+                  knowledgeClient: bundle.knowledgeClient,
+                  initialKbId: state.uri.queryParameters['kb'],
                 ),
               ),
             ],
@@ -113,10 +120,10 @@ GoRouter createRouter({
             routes: [
               GoRoute(
                 path: AppShell.locations[4],
-                builder: (context, state) => const PlaceholderPage(
-                  icon: Icons.settings_outlined,
-                  title: '设置',
-                  message: '服务连接与界面设置将在后续任务提供',
+                builder: (context, state) => SettingsPage(
+                  preferences: bundle.preferences,
+                  addressStore: bundle.addressStore,
+                  themeController: bundle.themeController,
                 ),
               ),
             ],

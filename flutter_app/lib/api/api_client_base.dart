@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+import '../app/server_address.dart';
 import 'api_error.dart';
 
 /// 请求超时：本机服务场景下超过即按网络故障处理
@@ -14,16 +15,15 @@ const apiRequestTimeout = Duration(seconds: 15);
 /// 各域客户端（查询/知识库/任务）组合本基座，错误解析与信封约定
 /// 只实现一次；SSE 等流式连接由域客户端自行建立（不走本基座）。
 class ApiClientBase {
-  ApiClientBase({http.Client? client, Uri? baseUrl})
-    : _client = client ?? http.Client(),
-      baseUrl = baseUrl ?? Uri.parse('http://127.0.0.1:8000');
+  ApiClientBase({http.Client? client, required this.address})
+    : _client = client ?? http.Client();
 
-  /// 本机服务地址仅在设置页可配置（后续任务接入）
-  final Uri baseUrl;
+  /// 服务地址单一事实源：设置页保存后对后续请求立即生效
+  final ServerAddressStore address;
 
   final http.Client _client;
 
-  Uri uri(String path) => baseUrl.replace(path: path);
+  Uri uri(String path) => address.value.replace(path: path);
 
   /// 执行一次请求：超时/网络故障归类，非 2xx 解析信封错误
   Future<http.Response> send(

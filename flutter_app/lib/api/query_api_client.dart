@@ -6,7 +6,9 @@ import 'package:http/io_client.dart';
 
 import 'api_client_base.dart';
 import 'api_error.dart';
+import 'dto/metrics_dto.dart';
 import 'dto/query_dto.dart';
+import '../app/server_address.dart';
 
 /// SSE 连接工厂：按 Last-Event-ID 打开事件流，返回响应与连接关闭句柄
 typedef SseConnect = Future<(http.StreamedResponse, void Function())>
@@ -19,9 +21,9 @@ Function(int lastEventId);
 class QueryApiClient {
   QueryApiClient({
     http.Client? client,
-    Uri? baseUrl,
+    required ServerAddressStore address,
     this.instanceId,
-  }) : _base = ApiClientBase(client: client, baseUrl: baseUrl);
+  }) : _base = ApiClientBase(client: client, address: address);
 
   /// 客户端实例标识（客户端本地生成并持久化的随机 UUID），仅遥测头携带
   final String? instanceId;
@@ -69,6 +71,18 @@ class QueryApiClient {
     );
     final data = _base.dataOf(response);
     return QueryRunStatus.fromName(data['state'] as String);
+  }
+
+  /// 查询聚合指标：TTFT 分位与状态计数（评测页消费）
+  Future<QueryMetricsSummary> queryMetrics({String? knowledgeBaseId}) async {
+    final response = await _base.send(
+      (client) => client.get(
+        _base.uri('/api/v1/metrics/queries').replace(
+              queryParameters: {'knowledge_base_id': ?knowledgeBaseId},
+            ),
+      ),
+    );
+    return QueryMetricsSummary.fromJson(_base.dataOf(response));
   }
 
   /// 上报客户端遥测（204；幂等，服务端忽略重复上报）

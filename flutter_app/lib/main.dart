@@ -10,7 +10,9 @@ import 'api/knowledge_api_client.dart';
 import 'api/query_api_client.dart';
 import 'app/app_preferences.dart';
 import 'app/router.dart';
+import 'app/server_address.dart';
 import 'controllers/app_shell_controller.dart';
+import 'controllers/theme_controller.dart';
 import 'theme/theme.dart';
 
 Future<void> main() async {
@@ -19,21 +21,30 @@ Future<void> main() async {
   final preferences = await AppPreferences.load();
   await _initWindow(preferences);
 
-  final knowledgeClient = KnowledgeApiClient();
+  final addressStore = ServerAddressStore(preferences.serverBaseUrl);
+  final knowledgeClient = KnowledgeApiClient(address: addressStore);
   final shellController = AppShellController(
+    address: addressStore,
     knowledgeClient: knowledgeClient,
   )..start();
+  final themeController = ThemeController(preferences);
   final bundle = ApiBundle(
     preferences: preferences,
+    addressStore: addressStore,
+    themeController: themeController,
     knowledgeClient: knowledgeClient,
-    queryClient: QueryApiClient(instanceId: preferences.clientInstanceId),
-    conversationClient: ConversationApiClient(),
+    queryClient: QueryApiClient(
+      address: addressStore,
+      instanceId: preferences.clientInstanceId,
+    ),
+    conversationClient: ConversationApiClient(address: addressStore),
   );
 
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider<AppShellController>.value(value: shellController),
+        ChangeNotifierProvider<ThemeController>.value(value: themeController),
       ],
       child: WorkbenchApp(
         router: createRouter(
@@ -41,7 +52,7 @@ Future<void> main() async {
           preferences: preferences,
           bundle: bundle,
         ),
-        themeMode: preferences.themeMode,
+        themeController: themeController,
         preferences: preferences,
       ),
     ),
@@ -65,17 +76,17 @@ Future<void> _initWindow(AppPreferences preferences) async {
 
 /// 应用根组件：路由与主题在此装配
 ///
-/// 主题模式在启动时读取一次，运行时切换在设置任务接入。
+/// 主题模式经 [ThemeController] 运行时切换（设置页入口），切换即时生效。
 class WorkbenchApp extends StatefulWidget {
   const WorkbenchApp({
     super.key,
     required this.router,
-    required this.themeMode,
+    required this.themeController,
     required this.preferences,
   });
 
   final GoRouter router;
-  final ThemeMode themeMode;
+  final ThemeController themeController;
   final AppPreferences preferences;
 
   @override
@@ -112,12 +123,17 @@ class _WorkbenchAppState extends State<WorkbenchApp> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp.router(
-      title: 'Document AI - RAG 文档助手',
-      theme: AppTheme.light,
-      darkTheme: AppTheme.dark,
-      themeMode: widget.themeMode,
-      routerConfig: widget.router,
+    return ListenableBuilder(
+      listenable: widget.themeController,
+      builder: (context, _) {
+        return MaterialApp.router(
+          title: 'Document AI - RAG 文档助手',
+          theme: AppTheme.light,
+          darkTheme: AppTheme.dark,
+          themeMode: widget.themeController.mode,
+          routerConfig: widget.router,
+        );
+      },
     );
   }
 }

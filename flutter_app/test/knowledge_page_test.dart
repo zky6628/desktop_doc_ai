@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
+import 'package:desktop_document_ai/app/server_address.dart';
 
 import 'support/app_test_env.dart';
 
@@ -26,6 +27,7 @@ http.Response envelope(Map<String, dynamic> data) => http.Response.bytes(
 /// 预置一个知识库与一个等待云端确认的任务
 Future<KnowledgeApiClient> mockKnowledgeClient() async {
   return KnowledgeApiClient(
+    address: ServerAddressStore(Uri.parse('http://127.0.0.1:8000')),
     client: MockClient((request) async {
       final path = request.url.path;
       if (path == '/api/v1/knowledge-bases/kb-1') {
@@ -197,6 +199,7 @@ void main() {
     }
 
     final knowledgeClient = KnowledgeApiClient(
+      address: ServerAddressStore(Uri.parse('http://127.0.0.1:8000')),
       client: MockClient((request) async {
         final path = request.url.path;
         if (path == '/api/v1/tasks') return tasksResponse();

@@ -13,6 +13,7 @@ import 'package:desktop_document_ai/api/api_error.dart';
 import 'package:desktop_document_ai/api/dto/knowledge_dto.dart';
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
 import 'package:desktop_document_ai/app/app_preferences.dart';
+import 'package:desktop_document_ai/app/server_address.dart';
 import 'package:desktop_document_ai/controllers/document_detail_controller.dart';
 import 'package:desktop_document_ai/controllers/knowledge_base_controller.dart';
 import 'package:desktop_document_ai/controllers/task_center_controller.dart';
@@ -33,7 +34,7 @@ KnowledgeApiClient clientWith(
   Future<http.Response> Function(http.Request) handler,
 ) => KnowledgeApiClient(
       client: MockClient(handler),
-      baseUrl: Uri.parse('http://127.0.0.1:8000'),
+      address: ServerAddressStore(Uri.parse('http://127.0.0.1:8000')),
     );
 
 void main() {
