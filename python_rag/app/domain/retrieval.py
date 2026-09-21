@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from app.domain.embedding import EMBEDDING_QUERY_TEXT_TYPE
 from app.domain.parsing import canonical_json
 
-# 检索配置版本：候选数/融合参数语义变化时必须递增
-RETRIEVAL_CONFIG_VERSION = "1"
+# 检索配置版本：候选数/融合参数/关键词匹配语义变化时必须递增
+RETRIEVAL_CONFIG_VERSION = "2"
 
 # 配置类型取值：与流水线配置表的 config_type 口径一致
 RETRIEVAL_CONFIG_TYPE = "retrieval"

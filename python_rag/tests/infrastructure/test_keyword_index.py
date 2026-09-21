@@ -164,7 +164,7 @@ class TestSqliteFtsKeywordIndex:
             conn.close()
 
     def test_query_keywords_multi_token_phrase_requires_adjacency(self, tmp_path):
-        """多词元查询构成单短语，要求词元在索引内容中相邻"""
+        """多词元查询构成单短语：短语命中存在时不降级 AND 匹配"""
         conn, index = self._fresh(tmp_path)
         try:
             index.rebuild_namespace(
@@ -176,7 +176,48 @@ class TestSqliteFtsKeywordIndex:
             )
             hits = index.query_keywords("fts-a", ["年假", "制度"], top_k=10)
 
+            # c2 同样包含两词元但不相邻；短语级已命中 c1，AND 级不触达
             assert [hit.chunk_id for hit in hits] == ["c1"]
+        finally:
+            conn.close()
+
+    def test_query_keywords_falls_back_to_all_terms_when_phrase_misses(self, tmp_path):
+        """短语零命中时降级全词元 AND 匹配：语序不同仍可召回"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            index.rebuild_namespace(
+                "fts-a",
+                [
+                    KeywordDocument(chunk_id="c1", content="年假 其他 制度"),
+                    KeywordDocument(chunk_id="c2", content="制度 背景 年假 补充"),
+                    KeywordDocument(chunk_id="c3", content="年假 单独 出现"),
+                ],
+            )
+            hits = index.query_keywords("fts-a", ["制度", "年假"], top_k=10)
+
+            # 短语级零命中（无相邻序列），AND 级召回两词元齐备的切片：
+            # 词频相同时更短文档 bm25 更优（c1 短于 c2）；仅含单词元的
+            # c3 不出现
+            assert [hit.chunk_id for hit in hits] == ["c1", "c2"]
+            assert hits[0].score > hits[1].score >= 0
+            for hit in hits:
+                assert hit.score == pytest.approx(-hit.raw_score)
+        finally:
+            conn.close()
+
+    def test_query_keywords_all_terms_miss_returns_empty(self, tmp_path):
+        """两级均无命中返回空列表"""
+        conn, index = self._fresh(tmp_path)
+        try:
+            index.rebuild_namespace(
+                "fts-a",
+                [
+                    KeywordDocument(chunk_id="c1", content="年假 其他 制度"),
+                    KeywordDocument(chunk_id="c2", content="香蕉 单独 出现"),
+                ],
+            )
+
+            assert index.query_keywords("fts-a", ["制度", "苹果"], top_k=10) == []
         finally:
             conn.close()
 

@@ -681,10 +681,15 @@ class KeywordIndexGateway(ABC):
     def query_keywords(
         self, namespace: str, tokens: Sequence[str], top_k: int
     ) -> list[IndexHit]:
-        """按预分词词元序列取短语匹配命中
+        """按预分词词元序列取两级匹配命中
+
+        匹配两级：先按词元序列做短语精确匹配（词面强信号）；短语零
+        命中且词元数大于 1 时，降级为全词元 AND 匹配（不要求相邻与
+        语序）。同一查询内两级至多产出一路结果，短语命中存在时 AND
+        级不触达。
 
         :param namespace: 命名空间（不存在返回空列表）
-        :param tokens: 分词器产出的词元序列（构成单短语精确匹配）
+        :param tokens: 分词器产出的词元序列
         :param top_k: 返回命中数上限
         :return: 按相关度降序的命中（score 越高越相关，原始 bm25 值
             随命中保留）"""
