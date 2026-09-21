@@ -57,10 +57,6 @@ GoRouter createRouter({
               GoRoute(
                 path: AppShell.locations[0],
                 builder: (context, state) => ChatPage(
-                  queryClient: bundle.queryClient,
-                  conversationClient: bundle.conversationClient,
-                  knowledgeClient: bundle.knowledgeClient,
-                  preferences: bundle.preferences,
                   initialKbId: state.uri.queryParameters['kb'],
                   initialConversationId:
                       state.uri.queryParameters['conversation'],

@@ -12,6 +12,7 @@ import '../api/knowledge_api_client.dart';
 import '../api/query_api_client.dart';
 import '../api/sse/query_stream_session.dart';
 import '../app/app_preferences.dart';
+import '../utils/request_guard.dart';
 
 /// 问答消息视图：会话历史与流式生成共用的渲染事实
 class ChatMessageView {
@@ -64,9 +65,9 @@ class ChatController extends ChangeNotifier {
   final KnowledgeApiClient _knowledge;
   final AppPreferences _preferences;
 
-  final _loadGuard = _LatestRequestGuard();
-  final _listGuard = _LatestRequestGuard();
-  final _messagesGuard = _LatestRequestGuard();
+  final _loadGuard = LatestRequestGuard();
+  final _listGuard = LatestRequestGuard();
+  final _messagesGuard = LatestRequestGuard();
 
   // ===================== 知识库上下文 =====================
 
@@ -640,16 +641,20 @@ class ChatController extends ChangeNotifier {
 
   String _localId() => 'local-${const Uuid().v4()}';
 
+  // 全局生命周期控制器：测试或热重载卸载宿主树时，仍在途的异步
+  // 收尾（列表/消息加载的 notifyListeners）不允许触碰已释放的通知器
+  bool _disposed = false;
+
+  @override
+  void notifyListeners() {
+    if (_disposed) return;
+    super.notifyListeners();
+  }
+
   @override
   void dispose() {
+    _disposed = true;
     _streamSubscription?.cancel();
     super.dispose();
   }
-}
-
-/// 请求序号防过期响应守卫
-class _LatestRequestGuard {
-  int _seq = 0;
-  int begin() => ++_seq;
-  bool isLatest(int seq) => seq == _seq;
 }

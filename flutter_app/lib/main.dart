@@ -12,6 +12,7 @@ import 'app/app_preferences.dart';
 import 'app/router.dart';
 import 'app/server_address.dart';
 import 'controllers/app_shell_controller.dart';
+import 'controllers/chat_controller.dart';
 import 'controllers/theme_controller.dart';
 import 'theme/theme.dart';
 
@@ -28,23 +29,37 @@ Future<void> main() async {
     knowledgeClient: knowledgeClient,
   )..start();
   final themeController = ThemeController(preferences);
+  final queryClient = QueryApiClient(
+    address: addressStore,
+    instanceId: preferences.clientInstanceId,
+  );
+  final conversationClient = ConversationApiClient(address: addressStore);
   final bundle = ApiBundle(
     preferences: preferences,
     addressStore: addressStore,
     themeController: themeController,
     knowledgeClient: knowledgeClient,
-    queryClient: QueryApiClient(
-      address: addressStore,
-      instanceId: preferences.clientInstanceId,
-    ),
-    conversationClient: ConversationApiClient(address: addressStore),
+    queryClient: queryClient,
+    conversationClient: conversationClient,
   );
+  // 问答控制器为全局单例：外壳侧边栏（新建会话/会话列表）与问答页共享
+  // 同一实例；知识库解析经壳层控制器广播实现跨页同步。会话列表为跨库
+  // 全量历史，创建即预载供侧边栏展示
+  final chatController = ChatController(
+    queryClient: queryClient,
+    conversationClient: conversationClient,
+    knowledgeClient: knowledgeClient,
+    preferences: preferences,
+    onKnowledgeBaseResolved: shellController.setCurrentKnowledgeBase,
+  );
+  unawaited(chatController.reloadConversations());
 
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider<AppShellController>.value(value: shellController),
         ChangeNotifierProvider<ThemeController>.value(value: themeController),
+        ChangeNotifierProvider<ChatController>.value(value: chatController),
       ],
       child: WorkbenchApp(
         router: createRouter(

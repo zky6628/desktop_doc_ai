@@ -10,6 +10,7 @@ import 'package:http/testing.dart';
 
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
 import 'package:desktop_document_ai/app/server_address.dart';
+import 'package:desktop_document_ai/widgets/app/sidebar.dart';
 
 import 'support/app_test_env.dart';
 
@@ -126,9 +127,16 @@ void main() {
     );
     await settleChatConnection(tester);
 
+    // 宽档窗口：文档区头部按钮完整展开，避免窄档下按钮挤压导致
+    // tap 坐标命中相邻控件
+    tester.view.physicalSize = const Size(1200, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pump();
+
     // 切到知识库页：自动恢复最近 KB 后横幅出现
     final rail = find.descendant(
-      of: find.byType(NavigationRail),
+      of: find.byType(WorkbenchSidebar),
       matching: find.byIcon(Icons.library_books_outlined),
     );
     await tester.tap(rail.first);

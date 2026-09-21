@@ -17,6 +17,7 @@ import 'package:desktop_document_ai/app/app_preferences.dart';
 import 'package:desktop_document_ai/app/router.dart';
 import 'package:desktop_document_ai/app/server_address.dart';
 import 'package:desktop_document_ai/controllers/app_shell_controller.dart';
+import 'package:desktop_document_ai/controllers/chat_controller.dart';
 import 'package:desktop_document_ai/controllers/theme_controller.dart';
 import 'package:desktop_document_ai/main.dart';
 
@@ -83,6 +84,19 @@ Future<Widget> _assemble(
         create: (context) => AppShellController(address: addressStore),
       ),
       ChangeNotifierProvider<ThemeController>.value(value: themeController),
+      // 问答控制器与页面共享同一实例；会话列表请求在测试环境必然失败
+      // （FakeAsync 拦截 HTTP），按列表错误空态渲染
+      ChangeNotifierProvider<ChatController>(
+        create: (context) => ChatController(
+          queryClient: QueryApiClient(
+            address: addressStore,
+            instanceId: appPreferences.clientInstanceId,
+          ),
+          conversationClient: ConversationApiClient(address: addressStore),
+          knowledgeClient: knowledgeClient,
+          preferences: appPreferences,
+        ),
+      ),
     ],
     child: WorkbenchApp(
       router: createRouter(

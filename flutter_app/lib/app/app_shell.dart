@@ -5,14 +5,18 @@ import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
 import '../controllers/app_shell_controller.dart';
+import '../controllers/chat_controller.dart';
 import '../theme/colors.dart';
 import '../utils/breakpoints.dart';
+import '../widgets/app/sidebar.dart';
 import 'app_preferences.dart';
 
-/// 应用外壳：顶栏（当前知识库 / 服务状态 / 设置）+ 侧导航 + 页面内容
+/// 应用外壳：顶栏（当前知识库 / 服务状态 / 任务数）+ 侧边栏 + 页面内容
 ///
-/// 响应式形态：>=1100px 导航带文字标签；800-1099px 与 <800px 为图标
-/// 导航（窗口已受最小尺寸约束，紧凑档保证可用）。
+/// 侧边栏为自定义结构：一级导航（新建会话/知识库/任务中心/评测）、
+/// 可滚动历史会话列表与吸底设置入口；宽档显示会话摘要行，紧凑档
+/// （800-1099px）只保留标题行。问答页不再是显式路由项，由"新建会话"
+/// 与会话条目进入。
 class AppShell extends StatelessWidget {
   const AppShell({
     super.key,
@@ -23,24 +27,8 @@ class AppShell extends StatelessWidget {
   final StatefulNavigationShell navigationShell;
   final AppPreferences preferences;
 
-  /// 一级导航定义：顺序与路由分支顺序一致
-  static const _destinations = [
-    (icon: Icons.forum_outlined, selectedIcon: Icons.forum, label: '问答'),
-    (
-      icon: Icons.library_books_outlined,
-      selectedIcon: Icons.library_books,
-      label: '知识库',
-    ),
-    (icon: Icons.task_alt, selectedIcon: Icons.task_alt, label: '任务中心'),
-    (icon: Icons.insights_outlined, selectedIcon: Icons.insights, label: '评测'),
-    (
-      icon: Icons.settings_outlined,
-      selectedIcon: Icons.settings,
-      label: '设置',
-    ),
-  ];
-
-  /// 一级页面路径：顺序与导航定义及路由分支顺序一致
+  /// 一级页面路径：顺序与路由分支顺序一致（问答分支由侧边栏动作进入，
+  /// 路径仍作为 lastLocation 恢复与深链的合法值保留）
   static const locations = [
     '/chat',
     '/knowledge-bases',
@@ -59,19 +47,11 @@ class AppShell extends StatelessWidget {
           final breakpoint = Breakpoints.of(constraints.maxWidth);
           return Row(
             children: [
-              NavigationRail(
-                selectedIndex: navigationShell.currentIndex,
-                onDestinationSelected: _onDestinationSelected,
-                extended: breakpoint == WindowBreakpoint.expanded,
-                labelType: NavigationRailLabelType.none,
-                destinations: [
-                  for (final destination in _destinations)
-                    NavigationRailDestination(
-                      icon: Icon(destination.icon),
-                      selectedIcon: Icon(destination.selectedIcon),
-                      label: Text(destination.label),
-                    ),
-                ],
+              WorkbenchSidebar(
+                currentBranch: navigationShell.currentIndex,
+                onGoBranch: _onGoBranch,
+                onNewConversation: () => _onNewConversation(context),
+                showSummaries: breakpoint == WindowBreakpoint.expanded,
               ),
               const VerticalDivider(thickness: 1, width: 1),
               Expanded(child: navigationShell),
@@ -113,7 +93,7 @@ class AppShell extends StatelessWidget {
             Tooltip(
               message: '非终态任务数，点击进入任务中心',
               child: InkWell(
-                onTap: () => context.go('/tasks'),
+                onTap: () => _onGoBranch(2),
                 borderRadius: BorderRadius.circular(10),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
@@ -137,23 +117,23 @@ class AppShell extends StatelessWidget {
           ],
         ],
       ),
-      actions: [
-        IconButton(
-          tooltip: '设置',
-          icon: const Icon(Icons.settings_outlined),
-          onPressed: () => context.go('/settings'),
-        ),
-        const SizedBox(width: 8),
-      ],
     );
   }
 
-  void _onDestinationSelected(int index) {
-    // 记录最后停留页面，重启后恢复；分支内容保持各自状态
+  /// 分支切换：记录最后停留页面，重启后恢复；分支内容保持各自状态
+  void _onGoBranch(int index) {
     unawaited(preferences.saveLastLocation(locations[index]));
     navigationShell.goBranch(
       index,
       initialLocation: index == navigationShell.currentIndex,
     );
+  }
+
+  /// 新建会话动作：切换到问答分支（不重置分支——重置会让问答页重建
+  /// 并按最近会话恢复，与草稿态互斥），再由控制器清为草稿等待输入
+  void _onNewConversation(BuildContext context) {
+    unawaited(preferences.saveLastLocation(locations[0]));
+    navigationShell.goBranch(0, initialLocation: false);
+    context.read<ChatController>().newConversation();
   }
 }

@@ -4,38 +4,26 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
-import '../api/conversation_api_client.dart';
-import '../api/dto/conversation_dto.dart';
-import '../api/dto/knowledge_dto.dart';
-import '../api/knowledge_api_client.dart';
-import '../api/query_api_client.dart';
-import '../app/app_preferences.dart';
 import '../controllers/app_shell_controller.dart';
 import '../controllers/chat_controller.dart';
+import '../api/dto/knowledge_dto.dart';
 import '../theme/colors.dart';
 import '../widgets/chat/chat_message_item.dart';
-import '../widgets/chat/conversation_list_panel.dart';
 
-/// 问答页：会话列表、消息流式渲染、引用抽屉与遥测采样
+/// 问答页：消息流式渲染、引用抽屉与遥测采样
 ///
-/// 行为对齐 UI 规范 §4/§12：发送即记录 client_send_at 并显示用户消息，
-/// SSE token 增量渲染（首 token 首帧后采样 rendered 时间戳），终态上传
-/// 客户端遥测；[S编号] 可点击定位引用抽屉；知识库已删除进入只读。
+/// 会话列表与新建会话入口由应用外壳侧边栏承担（全局 [ChatController]
+/// 提供），本页只负责消息区与引用抽屉。行为对齐 UI 规范 §4/§12：发送
+/// 即记录 client_send_at 并显示用户消息，SSE token 增量渲染（首 token
+/// 首帧后采样 rendered 时间戳），终态上传客户端遥测；[S编号] 可点击
+/// 定位引用抽屉；知识库已删除进入只读。
 class ChatPage extends StatefulWidget {
   const ChatPage({
     super.key,
-    required this.queryClient,
-    required this.conversationClient,
-    required this.knowledgeClient,
-    required this.preferences,
     this.initialKbId,
     this.initialConversationId,
   });
 
-  final QueryApiClient queryClient;
-  final ConversationApiClient conversationClient;
-  final KnowledgeApiClient knowledgeClient;
-  final AppPreferences preferences;
   final String? initialKbId;
   final String? initialConversationId;
 
@@ -62,26 +50,18 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
-    _controller = ChatController(
-      queryClient: widget.queryClient,
-      conversationClient: widget.conversationClient,
-      knowledgeClient: widget.knowledgeClient,
-      preferences: widget.preferences,
-      onKnowledgeBaseResolved: (id, name) {
-        if (mounted) {
-          context
-              .read<AppShellController>()
-              .setCurrentKnowledgeBase(id, name);
-        }
-      },
-    );
+    _controller = context.read<ChatController>();
     _controller.addListener(_onControllerChanged);
-    unawaited(
-      _controller.loadInitial(
-        kbId: widget.initialKbId,
-        conversationId: widget.initialConversationId,
-      ),
-    );
+    // 首载延后到首帧之后：控制器为全局单例（外壳侧边栏同帧监听），
+    // 构建阶段同步通知会把兄弟组件标记为需要重建
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(
+        _controller.loadInitial(
+          kbId: widget.initialKbId,
+          conversationId: widget.initialConversationId,
+        ),
+      );
+    });
   }
 
   @override
@@ -108,8 +88,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() {
     _shell?.removeListener(_onShellChanged);
+    // 控制器为全局单例（生命周期与应用一致），页面只解除监听不释放
     _controller.removeListener(_onControllerChanged);
-    _controller.dispose();
     _inputController.dispose();
     _messagesScroll.dispose();
     super.dispose();
@@ -196,64 +176,6 @@ class _ChatPageState extends State<ChatPage> {
     return null;
   }
 
-  Future<void> _confirmDeleteConversation(ConversationSummaryDto conversation) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('删除会话'),
-        content: const Text('会话消息与引用将被删除，查询指标事实保留。此操作不可恢复。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.error,
-              foregroundColor: Colors.white,
-            ),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true) {
-      unawaited(_controller.deleteConversation(conversation.id));
-    }
-  }
-
-  Future<void> _renameConversation(ConversationSummaryDto conversation) async {
-    final titleController = TextEditingController(text: conversation.title ?? '');
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('重命名会话'),
-        content: TextField(
-          controller: titleController,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: '标题'),
-          onSubmitted: (_) => Navigator.pop(context, true),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('保存'),
-          ),
-        ],
-      ),
-    );
-    if (ok == true && titleController.text.trim().isNotEmpty) {
-      unawaited(
-        _controller.renameConversation(conversation.id, titleController.text),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -262,24 +184,6 @@ class _ChatPageState extends State<ChatPage> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ConversationListPanel(
-          conversations: _controller.conversations,
-          currentConversationId: _controller.currentConversationId,
-          loading: _controller.conversationsLoading,
-          hasMore: _controller.hasMoreConversations,
-          // 未选择知识库时新建仅会切换到草稿空态（无感知），直接禁用
-          enabled: kb != null && !readOnly && !_controller.generating,
-          error: _controller.listError?.message,
-          onSelect: (id) => unawaited(_controller.selectConversation(id)),
-          onNewConversation: _controller.newConversation,
-          onRename: (conversation) =>
-              unawaited(_renameConversation(conversation)),
-          onDelete: (conversation) =>
-              unawaited(_confirmDeleteConversation(conversation)),
-          onLoadMore: () => unawaited(_controller.loadMoreConversations()),
-          onRetry: () => unawaited(_controller.reloadConversations()),
-        ),
-        const VerticalDivider(thickness: 1, width: 1),
         Expanded(child: _buildChatArea(context, theme, kb, readOnly)),
         _buildCitationDrawer(theme),
       ],
