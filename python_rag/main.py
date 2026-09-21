@@ -8,6 +8,7 @@ FastAPI RAG 服务主入口
 # 导入系统模块
 import os
 import sys
+import threading
 # 导入 IO 模块，用于重新设置标准流的编码
 import io
 # 导入 JSON 模块
@@ -183,7 +184,9 @@ from app.api.v1 import (
     DocumentDependencies,
     KnowledgeBaseDependencies,
     MetricsDependencies,
+    OpsDependencies,
     QueryDependencies,
+    SearchDependencies,
     TaskDependencies,
     create_api_router,
 )
@@ -679,6 +682,12 @@ WORKBENCH_CHROMA_DIR = (
     os.getenv("WORKBENCH_CHROMA_DIR")
     or os.path.join(BASE_DIR, "data", "chroma_workbench")
 )
+# 本地调试检索开关：显式开启后 /search 端点可用（Top-K 覆盖与候选
+# 明细为调试能力），发布包默认关闭
+WORKBENCH_LOCAL_DEBUG = (
+    (os.getenv("WORKBENCH_LOCAL_DEBUG") or "0").strip().lower()
+    in ("1", "true", "on")
+)
 
 os.makedirs(os.path.dirname(WORKBENCH_DB_PATH), exist_ok=True)
 
@@ -696,6 +705,7 @@ _workbench_task_repo = SQLiteTaskRepository(_workbench_conn)
 # 导入任务停留在队列，由下次启动的恢复流程继续推进。云端解析令牌
 # 缺失时 Worker 仍消费本地路线，云端任务在提交时按认证失败处理
 _import_worker: ImportTaskWorker | None = None
+_worker_thread: threading.Thread | None = None
 if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "false", "off"):
     _mineru_token = os.getenv("MINERU_API_TOKEN") or ""
     _dashscope_key = os.getenv("DASHSCOPE_API_KEY") or ""
@@ -720,7 +730,8 @@ if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "
         work_dir=os.path.join(WORKBENCH_STAGING_DIR, "cloud_results"),
         worker_id=f"worker-{uuid7()}",
     )
-    _import_worker.start_background()
+    # 线程引用供健康探针判断工作循环存活
+    _worker_thread = _import_worker.start_background()
 
     @app.on_event("shutdown")
     def _stop_import_worker() -> None:
@@ -737,6 +748,28 @@ _query_citation_repo = SQLiteCitationRepository(_workbench_conn)
 _query_config_repo = SQLiteConfigRepository(_workbench_conn)
 _query_kb_repo = SQLiteKnowledgeBaseRepository(_workbench_conn)
 _query_dashscope_key = os.getenv("DASHSCOPE_API_KEY") or ""
+# 检索服务与事实解析器为查询链路与调试检索共享的单例（同一实例保证
+# 调试观察到的检索行为与生产一致）
+_retrieval_service = RetrievalService(
+    index_repo=SQLiteIndexVersionRepository(_workbench_conn),
+    chunk_repo=SQLiteChunkRepository(_workbench_conn),
+    query_embedder=(
+        DashScopeEmbeddingGateway(api_key=_query_dashscope_key)
+        if _query_dashscope_key
+        else None
+    ),
+    vector_index=ChromaVectorIndexAdapter(
+        chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR)
+    ),
+    keyword_index=SQLiteFtsKeywordIndex(_workbench_conn),
+    tokenizer=JiebaTokenizer(),
+)
+_context_resolver = ContextResolver(
+    index_repo=SQLiteIndexVersionRepository(_workbench_conn),
+    chunk_repo=SQLiteChunkRepository(_workbench_conn),
+    document_repo=SQLiteDocumentRepository(_workbench_conn),
+    version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
+)
 _query_deps = QueryDependencies(
     orchestrator=QueryOrchestrator(
         run_repo=_query_run_repo,
@@ -744,26 +777,8 @@ _query_deps = QueryDependencies(
         conversation_repo=_query_conversation_repo,
         config_repo=_query_config_repo,
         citation_repo=_query_citation_repo,
-        retrieval_service=RetrievalService(
-            index_repo=SQLiteIndexVersionRepository(_workbench_conn),
-            chunk_repo=SQLiteChunkRepository(_workbench_conn),
-            query_embedder=(
-                DashScopeEmbeddingGateway(api_key=_query_dashscope_key)
-                if _query_dashscope_key
-                else None
-            ),
-            vector_index=ChromaVectorIndexAdapter(
-                chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR)
-            ),
-            keyword_index=SQLiteFtsKeywordIndex(_workbench_conn),
-            tokenizer=JiebaTokenizer(),
-        ),
-        resolver=ContextResolver(
-            index_repo=SQLiteIndexVersionRepository(_workbench_conn),
-            chunk_repo=SQLiteChunkRepository(_workbench_conn),
-            document_repo=SQLiteDocumentRepository(_workbench_conn),
-            version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
-        ),
+        retrieval_service=_retrieval_service,
+        resolver=_context_resolver,
         rerank_gateway=(
             DashScopeRerankGateway(api_key=_query_dashscope_key)
             if _query_dashscope_key
@@ -821,6 +836,28 @@ app.include_router(
                 kb_repo=SQLiteKnowledgeBaseRepository(_workbench_conn),
                 conversation_repo=_query_conversation_repo,
                 citation_repo=_query_citation_repo,
+            ),
+            ops=OpsDependencies(
+                conn=_workbench_conn,
+                chroma_client=chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR),
+                worker_enabled=_import_worker is not None,
+                worker_alive=lambda: (
+                    _worker_thread is not None and _worker_thread.is_alive()
+                ),
+                mineru_configured=bool(os.getenv("MINERU_API_TOKEN")),
+                dashscope_configured=bool(os.getenv("DASHSCOPE_API_KEY")),
+                local_debug_enabled=WORKBENCH_LOCAL_DEBUG,
+            ),
+            search=SearchDependencies(
+                kb_repo=_query_kb_repo,
+                retrieval_service=_retrieval_service,
+                resolver=_context_resolver,
+                rerank_gateway=(
+                    DashScopeRerankGateway(api_key=_query_dashscope_key)
+                    if _query_dashscope_key
+                    else None
+                ),
+                local_debug_enabled=WORKBENCH_LOCAL_DEBUG,
             ),
         )
     )

@@ -38,7 +38,9 @@ from .knowledge_bases import (
     create_knowledge_bases_router,
 )
 from .metrics import MetricsDependencies, create_metrics_router
+from .ops import OpsDependencies, create_ops_router
 from .queries import QueryDependencies, create_query_router
+from .search import SearchDependencies, create_search_router
 from .tasks import TaskDependencies, create_tasks_router
 
 # 单批次文件数上限复用上传策略常量，保证口径一致
@@ -61,6 +63,8 @@ class ApiV1Dependencies:
     documents: DocumentDependencies | None = None
     tasks: TaskDependencies | None = None
     conversations: ConversationDependencies | None = None
+    ops: OpsDependencies | None = None
+    search: SearchDependencies | None = None
 
 
 class CloudConfirmationRequest(BaseModel):
@@ -93,6 +97,10 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
         router.include_router(
             create_conversations_router(deps.conversations)
         )
+    if deps.ops is not None:
+        router.include_router(create_ops_router(deps.ops))
+    if deps.search is not None:
+        router.include_router(create_search_router(deps.search))
 
     @router.post("/knowledge-bases/{kb_id}/documents")
     def upload_documents(
@@ -232,13 +240,17 @@ __all__ = [
     "DocumentDependencies",
     "KnowledgeBaseDependencies",
     "MetricsDependencies",
+    "OpsDependencies",
     "QueryDependencies",
+    "SearchDependencies",
     "TaskDependencies",
     "create_api_router",
     "create_conversations_router",
     "create_documents_router",
     "create_knowledge_bases_router",
     "create_metrics_router",
+    "create_ops_router",
     "create_query_router",
+    "create_search_router",
     "create_tasks_router",
 ]

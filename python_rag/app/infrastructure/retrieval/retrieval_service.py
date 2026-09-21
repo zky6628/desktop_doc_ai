@@ -62,11 +62,24 @@ class RetrievalService:
         self._fused_top_k = fused_top_k
         self._rrf_k = rrf_k
 
-    def retrieve(self, kb_id: str, question: str) -> RetrievalOutcome:
+    def retrieve(
+        self,
+        kb_id: str,
+        question: str,
+        *,
+        vector_top_k: int | None = None,
+        keyword_top_k: int | None = None,
+        fused_top_k: int | None = None,
+    ) -> RetrievalOutcome:
         """按问题检索知识库，返回融合候选
 
         问题为空白时拒绝（ValueError）；知识库无可检索索引时返回空
-        产出且不发起查询嵌入
+        产出且不发起查询嵌入。top_k 覆盖参数仅供本地调试检索使用
+        （None 表示沿用实例配置值；查询链路不传，保持冻结口径）
+
+        :param vector_top_k: 向量路召回数覆盖
+        :param keyword_top_k: 关键词路召回数覆盖
+        :param fused_top_k: 融合候选数覆盖
         """
         if not question.strip():
             raise ValueError("检索问题不能为空")
@@ -74,11 +87,22 @@ class RetrievalService:
         if not indexes:
             return RetrievalOutcome(candidates=(), dropped_hit_count=0)
 
+        effective_vector_top_k = (
+            self._vector_top_k if vector_top_k is None else vector_top_k
+        )
+        effective_keyword_top_k = (
+            self._keyword_top_k if keyword_top_k is None else keyword_top_k
+        )
+        effective_fused_top_k = (
+            self._fused_top_k if fused_top_k is None else fused_top_k
+        )
         query_vector = self._query_embedder.embed_query(question)
         tokens = self._tokenizer.tokenize([question])[0]
 
-        vector_hits = self._collect_vector_hits(indexes, query_vector)
-        keyword_hits = self._collect_keyword_hits(indexes, tokens)
+        vector_hits = self._collect_vector_hits(indexes, query_vector, effective_vector_top_k)
+        keyword_hits = self._collect_keyword_hits(
+            indexes, tokens, effective_keyword_top_k
+        )
 
         anchors = {
             anchor.chunk_id: anchor
@@ -89,23 +113,25 @@ class RetrievalService:
         vector_candidates, dropped = self._enrich(vector_hits, anchors)
         keyword_candidates, keyword_dropped = self._enrich(keyword_hits, anchors)
 
-        vector_ranked = rank_route_candidates(vector_candidates, self._vector_top_k)
+        vector_ranked = rank_route_candidates(vector_candidates, effective_vector_top_k)
         keyword_ranked = rank_route_candidates(
-            keyword_candidates, self._keyword_top_k
+            keyword_candidates, effective_keyword_top_k
         )
         fused = fuse_route_rankings(
             vector_ranked,
             keyword_ranked,
             rrf_k=self._rrf_k,
-            fused_top_k=self._fused_top_k,
+            fused_top_k=effective_fused_top_k,
         )
         return RetrievalOutcome(
             candidates=tuple(fused),
             dropped_hit_count=dropped + keyword_dropped,
+            vector_hit_count=len(vector_hits),
+            keyword_hit_count=len(keyword_hits),
         )
 
     def _collect_vector_hits(
-        self, indexes: list[IndexVersion], query_vector: list[float]
+        self, indexes: list[IndexVersion], query_vector: list[float], top_k: int
     ) -> list[HitSource]:
         """逐活动集合查询向量路命中"""
         hits: list[HitSource] = []
@@ -115,13 +141,13 @@ class RetrievalService:
                 # 跳过该索引不伪造命中
                 continue
             found = self._vector_index.query_vectors(
-                index.vector_collection, query_vector, self._vector_top_k
+                index.vector_collection, query_vector, top_k
             )
             hits.extend((index, hit) for hit in found)
         return hits
 
     def _collect_keyword_hits(
-        self, indexes: list[IndexVersion], tokens: list[str]
+        self, indexes: list[IndexVersion], tokens: list[str], top_k: int
     ) -> list[HitSource]:
         """逐活动命名空间查询关键词路命中（空词元不发起查询）"""
         if not tokens:
@@ -132,7 +158,7 @@ class RetrievalService:
                 # 同向量路：活动索引缺失资产名属数据漂移，跳过
                 continue
             found = self._keyword_index.query_keywords(
-                index.fts_namespace, tokens, self._keyword_top_k
+                index.fts_namespace, tokens, top_k
             )
             hits.extend((index, hit) for hit in found)
         return hits

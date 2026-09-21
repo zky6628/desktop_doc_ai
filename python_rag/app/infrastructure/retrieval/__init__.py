@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-"""检索编排：双路召回、RRF 融合与上下文事实解析的实时查询路径"""
+"""检索编排：双路召回、RRF 融合、重排降级与上下文事实解析的实时查询路径"""
 from .context_resolver import ContextResolver
+from .rerank_ranking import RerankRanking, rank_with_rerank
 from .retrieval_service import RetrievalService
 
-__all__ = ["ContextResolver", "RetrievalService"]
+__all__ = ["ContextResolver", "RerankRanking", "RetrievalService", "rank_with_rerank"]

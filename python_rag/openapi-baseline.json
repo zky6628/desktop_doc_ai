@@ -327,6 +327,69 @@
         "title": "QueryRequest",
         "type": "object"
       },
+      "SearchBody": {
+        "description": "调试检索请求体：覆盖参数为空表示沿用服务端配置值",
+        "properties": {
+          "fused_top_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fused Top K"
+          },
+          "keyword_top_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword Top K"
+          },
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "rerank_top_n": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Top N"
+          },
+          "vector_top_k": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Top K"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "question"
+        ],
+        "title": "SearchBody",
+        "type": "object"
+      },
       "SearchRequest": {
         "description": "相似度检索请求模型",
         "properties": {
@@ -529,6 +592,23 @@
         "tags": [
           "知识库管理"
         ]
+      }
+    },
+    "/api/v1/config/public": {
+      "get": {
+        "description": "无密钥运行配置概览：模型身份、在役配置摘要、容量与开关",
+        "operationId": "public_config_api_v1_config_public_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Public Config"
       }
     },
     "/api/v1/conversations": {
@@ -1044,6 +1124,23 @@
           }
         },
         "summary": "List Document Versions"
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "description": "聚合健康探针：核心组件状态、队列水位与凭据配置状态",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
       }
     },
     "/api/v1/health/knowledge-bases/{kb_id}": {
@@ -1750,6 +1847,43 @@
           }
         },
         "summary": "Stream Events"
+      }
+    },
+    "/api/v1/search": {
+      "post": {
+        "description": "本地调试检索：各阶段候选明细与阶段规模（零写入）",
+        "operationId": "search_api_v1_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search"
       }
     },
     "/api/v1/tasks": {

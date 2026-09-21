@@ -120,14 +120,18 @@ class CandidateRecord:
 
 @dataclass(frozen=True)
 class RetrievalOutcome:
-    """一次检索的产出：融合候选与被丢弃的命中计数
+    """一次检索的产出：融合候选、被丢弃的命中计数与各路召回计数
 
     dropped_hit_count 记录切片事实缺失或归属不符而无法进入融合的
-    命中数（索引漂移由健康检查定位修复，检索不伪造事实）
+    命中数（索引漂移由健康检查定位修复，检索不伪造事实）；
+    vector_hit_count / keyword_hit_count 为融合前各路的原始命中数
+    （含后续被丢弃的部分），供调试检索观察各阶段规模
     """
 
     candidates: tuple[RetrievalCandidate, ...]
     dropped_hit_count: int
+    vector_hit_count: int = 0
+    keyword_hit_count: int = 0
 
 
 def rank_route_candidates(

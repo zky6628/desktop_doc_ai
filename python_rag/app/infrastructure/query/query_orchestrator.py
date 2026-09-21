@@ -30,9 +30,8 @@ from app.domain.entities import QueryRun, QueryRunState
 from app.domain.errors import (
     QueryStateConflictError,
     RepositoryError,
-    RerankTransientError,
 )
-from app.domain.generation import RERANK_INLINE_RETRIES, generation_config_json
+from app.domain.generation import generation_config_json
 from app.domain.ports import (
     CitationRepository,
     ConversationRepository,
@@ -42,12 +41,16 @@ from app.domain.ports import (
     QueryRunRepository,
     RerankGateway,
 )
-from app.domain.rerank import RERANK_TOP_N, rerank_config_json
+from app.domain.rerank import rerank_config_json
 from app.domain.retrieval import (
     CandidateRecord,
     retrieval_config_json,
 )
-from app.infrastructure.retrieval import ContextResolver, RetrievalService
+from app.infrastructure.retrieval import (
+    ContextResolver,
+    RetrievalService,
+    rank_with_rerank,
+)
 
 # 未知异常的兜底错误码（终态落库与 SSE error 事件）
 _INTERNAL_ERROR = "INTERNAL_ERROR"
@@ -211,9 +214,12 @@ class QueryOrchestrator:
                 if candidate.chunk_id in sources_by_id
             ]
             rerank_started = self._clock()
-            degraded, ranked_ids, rerank_scores = self._rank_candidates(
-                question, result.candidates, candidate_texts
+            ranking = rank_with_rerank(
+                self._rerank_gateway, question, result.candidates, candidate_texts
             )
+            degraded = ranking.degraded
+            ranked_ids = ranking.ranked_ids
+            rerank_scores = ranking.rerank_scores
             rerank_ms = int((self._clock() - rerank_started) * 1000)
             if degraded:
                 self._emit_stage(run_id, "rerank_degraded")
@@ -306,35 +312,6 @@ class QueryOrchestrator:
             self._fail(run_id, getattr(exc, "error_code", _INTERNAL_ERROR), str(exc))
         except Exception as exc:  # noqa: BLE001 - 线程边界兜底，必须落终态
             self._fail(run_id, _INTERNAL_ERROR, type(exc).__name__)
-
-    def _rank_candidates(self, question, candidates, candidate_texts):
-        """重排候选（瞬态重试一次后按冻结策略降级为 RRF 前 5）"""
-        if not candidate_texts:
-            return True, [], {}
-        try:
-            hits = self._rerank_with_retry(question, candidate_texts)
-        except RerankTransientError:
-            # 冻结降级策略：使用 RRF 前 5（检索候选本身即 RRF 序）
-            ranked_ids = [
-                candidate.chunk_id for candidate in candidates[:RERANK_TOP_N]
-            ]
-            return True, ranked_ids, {}
-        rerank_scores: dict[str, float] = {}
-        for hit in hits:
-            if hit.index < len(candidates):
-                rerank_scores[candidates[hit.index].chunk_id] = hit.score
-        top_ids = [candidates[hit.index].chunk_id for hit in hits[:RERANK_TOP_N]]
-        return False, top_ids, rerank_scores
-
-    def _rerank_with_retry(self, question: str, texts: list[str]):
-        """进程内即重试（仅瞬态类）；重试耗尽抛原错误交降级路径"""
-        last_error: RerankTransientError | None = None
-        for _ in range(RERANK_INLINE_RETRIES + 1):
-            try:
-                return self._rerank_gateway.rerank(question, texts)
-            except RerankTransientError as exc:
-                last_error = exc
-        raise last_error  # type: ignore[misc]
 
     def _stream_generation(self, run_id, assembled, question):
         """流式生成：增量累积、批次落库、取消检查点
