@@ -156,8 +156,10 @@ class ChatController extends ChangeNotifier {
       actionError = error;
     }
     notifyListeners();
-    if (kb == null) return;
+    // 会话列表为跨库全量历史（与知识库解耦）：空态下也加载，
+    // 已删除知识库的会话仍可查看
     await reloadConversations();
+    if (kb == null) return;
     if (!_loadGuard.isLatest(seq)) return;
     await _restoreConversation(conversationId);
   }
@@ -177,8 +179,9 @@ class ChatController extends ChangeNotifier {
   }
 
   Future<void> _restoreConversation(String? conversationId) async {
-    // 最近会话缓存全局持久化，切库后旧库会话不属于当前库：仅当缓存
-    // 出现在当前库会话列表中才恢复，否则回退列表最新或草稿
+    // 最近会话缓存全局持久化：仅当缓存在会话列表中可见时才恢复
+    // （列表跨库全量，已删除知识库的会话同样可恢复），否则回退列表
+    // 最新或草稿
     final remembered = _preferences.lastConversationId;
     final rememberedInKb =
         remembered != null && conversations.any((item) => item.id == remembered)
@@ -217,14 +220,13 @@ class ChatController extends ChangeNotifier {
 
   // ===================== 会话列表操作 =====================
 
+  /// 会话列表（跨库全量，与当前知识库上下文解耦）
   Future<void> reloadConversations() async {
-    final kb = knowledgeBase;
-    if (kb == null) return;
     conversationsLoading = true;
     notifyListeners();
     try {
       final seq = _listGuard.begin();
-      final page = await _conversations.listConversations(kbId: kb.id);
+      final page = await _conversations.listConversations();
       if (!_listGuard.isLatest(seq)) return;
       conversations = page.items;
       _listCursor = page.nextCursor;
@@ -240,16 +242,12 @@ class ChatController extends ChangeNotifier {
 
   /// 加载更多（keyset 续页）
   Future<void> loadMoreConversations() async {
-    final kb = knowledgeBase;
-    if (kb == null || !hasMoreConversations || conversationsLoading) return;
+    if (!hasMoreConversations || conversationsLoading) return;
     conversationsLoading = true;
     notifyListeners();
     try {
       final seq = _listGuard.begin();
-      final page = await _conversations.listConversations(
-        kbId: kb.id,
-        cursor: _listCursor,
-      );
+      final page = await _conversations.listConversations(cursor: _listCursor);
       if (!_listGuard.isLatest(seq)) return;
       conversations = [...conversations, ...page.items];
       _listCursor = page.nextCursor;
@@ -329,6 +327,36 @@ class ChatController extends ChangeNotifier {
         return true;
       }
     }
+    notifyListeners();
+    return true;
+  }
+
+  /// 重命名会话（API 接受后才更新本地列表项标题）
+  Future<bool> renameConversation(String conversationId, String title) async {
+    final trimmed = title.trim();
+    if (trimmed.isEmpty) return false;
+    try {
+      await _conversations.renameConversation(conversationId, trimmed);
+      actionError = null;
+    } on ApiException catch (exc) {
+      actionError = exc;
+      notifyListeners();
+      return false;
+    }
+    conversations = [
+      for (final item in conversations)
+        if (item.id == conversationId)
+          ConversationSummaryDto(
+            id: item.id,
+            knowledgeBaseId: item.knowledgeBaseId,
+            title: trimmed,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
+            lastMessage: item.lastMessage,
+          )
+        else
+          item,
+    ];
     notifyListeners();
     return true;
   }

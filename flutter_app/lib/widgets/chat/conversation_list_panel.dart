@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../api/dto/conversation_dto.dart';
 
-/// 会话列表面板：新建会话、最近活跃列表与删除入口
+/// 会话列表面板：新建会话、最近活跃列表与重命名/删除入口
 ///
-/// 数据以服务端为权威（最近活跃倒序，含最后消息摘要）；删除在 API
-/// 接受后才从列表移除。
+/// 数据以服务端为权威（最近活跃倒序，含最后消息摘要）；重命名与
+/// 删除在 API 接受后才更新列表。
 class ConversationListPanel extends StatelessWidget {
   const ConversationListPanel({
     super.key,
@@ -16,6 +16,7 @@ class ConversationListPanel extends StatelessWidget {
     required this.enabled,
     required this.onSelect,
     required this.onNewConversation,
+    required this.onRename,
     required this.onDelete,
     required this.onLoadMore,
     required this.onRetry,
@@ -29,6 +30,7 @@ class ConversationListPanel extends StatelessWidget {
   final bool enabled;
   final ValueChanged<String> onSelect;
   final VoidCallback onNewConversation;
+  final ValueChanged<ConversationSummaryDto> onRename;
   final ValueChanged<ConversationSummaryDto> onDelete;
   final VoidCallback onLoadMore;
   final VoidCallback onRetry;
@@ -128,6 +130,7 @@ class ConversationListPanel extends StatelessWidget {
           selected: conversation.id == currentConversationId,
           enabled: enabled,
           onTap: () => onSelect(conversation.id),
+          onRename: () => onRename(conversation),
           onDelete: () => onDelete(conversation),
         );
       },
@@ -141,6 +144,7 @@ class _ConversationTile extends StatelessWidget {
     required this.selected,
     required this.enabled,
     required this.onTap,
+    required this.onRename,
     required this.onDelete,
   });
 
@@ -148,6 +152,7 @@ class _ConversationTile extends StatelessWidget {
   final bool selected;
   final bool enabled;
   final VoidCallback onTap;
+  final VoidCallback onRename;
   final VoidCallback onDelete;
 
   @override
@@ -195,6 +200,12 @@ class _ConversationTile extends StatelessWidget {
                       ],
                     ],
                   ),
+                ),
+                IconButton(
+                  tooltip: '重命名会话',
+                  icon: const Icon(Icons.edit_outlined, size: 16),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: enabled ? onRename : null,
                 ),
                 IconButton(
                   tooltip: '删除会话',

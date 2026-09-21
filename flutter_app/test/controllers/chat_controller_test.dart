@@ -98,25 +98,23 @@ class FakeConversationApiClient implements ConversationApiClient {
   FakeConversationApiClient();
 
   List<ConversationSummaryDto> conversations = const [];
-
-  /// 按知识库区分的会话列表（切库刷新用例；null 时回落到单列表）
-  Map<String, List<ConversationSummaryDto>>? conversationsByKb;
   Map<String, List<ConversationMessageDto>> messagesByConversation = {};
   ApiException? listError;
   ApiException? messagesError;
+  ApiException? renameError;
+  final renamedTitles = <String, String>{};
   final deletedIds = <String>[];
 
   @override
   Future<ConversationPage> listConversations({
-    required String kbId,
+    String? kbId,
     String? cursor,
     int? limit,
   }) async {
     final error = listError;
     if (error != null) throw error;
-    final byKb = conversationsByKb;
-    final items = byKb != null ? (byKb[kbId] ?? const []) : conversations;
-    return ApiPage(items: items, nextCursor: null);
+    // 列表跨库全量（与知识库解耦），替身忽略 kbId 过滤
+    return ApiPage(items: conversations, nextCursor: null);
   }
 
   @override
@@ -137,6 +135,13 @@ class FakeConversationApiClient implements ConversationApiClient {
   @override
   Future<void> deleteConversation(String conversationId) async {
     deletedIds.add(conversationId);
+  }
+
+  @override
+  Future<void> renameConversation(String conversationId, String title) async {
+    final error = renameError;
+    if (error != null) throw error;
+    renamedTitles[conversationId] = title;
   }
 }
 
@@ -502,6 +507,58 @@ void main() {
     expect(controller.conversations.map((c) => c.id), ['conv-b']);
   });
 
+  test('重命名会话成功后以规范化标题更新列表项', () async {
+    final harness = Harness();
+    harness.conversations.conversations = [_summary('conv-a'), _summary('conv-b')];
+    harness.conversations.messagesByConversation = {
+      'conv-a': [_message('user', '甲问题')],
+      'conv-b': [_message('user', '乙问题')],
+    };
+    final controller = await harness.build();
+
+    final renamed = await controller.renameConversation('conv-a', '  年假制度梳理  ');
+
+    expect(renamed, isTrue);
+    expect(harness.conversations.renamedTitles['conv-a'], '年假制度梳理');
+    expect(
+      controller.conversations.firstWhere((c) => c.id == 'conv-a').title,
+      '年假制度梳理',
+    );
+  });
+
+  test('重命名失败时列表保持原状并暴露错误', () async {
+    final harness = Harness();
+    harness.conversations.conversations = [_summary('conv-a')];
+    harness.conversations.messagesByConversation = {
+      'conv-a': [_message('user', '甲问题')],
+    };
+    harness.conversations.renameError = ApiException(
+      code: 'UNKNOWN',
+      message: '网络失败',
+    );
+    final controller = await harness.build();
+
+    final renamed = await controller.renameConversation('conv-a', '新标题');
+
+    expect(renamed, isFalse);
+    expect(controller.conversations.single.title, isNull);
+    expect(controller.actionError?.message, '网络失败');
+  });
+
+  test('空白标题不发起重命名请求', () async {
+    final harness = Harness();
+    harness.conversations.conversations = [_summary('conv-a')];
+    harness.conversations.messagesByConversation = {
+      'conv-a': [_message('user', '甲问题')],
+    };
+    final controller = await harness.build();
+
+    final renamed = await controller.renameConversation('conv-a', '   ');
+
+    expect(renamed, isFalse);
+    expect(harness.conversations.renamedTitles, isEmpty);
+  });
+
   test('知识库不存在时清理缓存并进入空态', () async {
     final harness = Harness();
     harness.knowledge.error = ApiException(
@@ -509,6 +566,7 @@ void main() {
       message: '知识库不存在',
       statusCode: 404,
     );
+    harness.conversations.conversations = [_summary('conv-legacy')];
 
     final controller = await harness.build(
       prefs: {'ui.last_kb_id': _kbId, 'ui.last_conversation_id': _conversationId},
@@ -517,6 +575,8 @@ void main() {
     expect(controller.knowledgeBase, isNull);
     expect(harness.preferences!.lastKnowledgeBaseId, isNull);
     expect(harness.preferences!.lastConversationId, isNull);
+    // 空态下历史列表仍加载（跨库全量）：已删除知识库的会话可查看
+    expect(controller.conversations.map((c) => c.id), ['conv-legacy']);
   });
 
   test('新建会话进入草稿态，发送时不携带会话 ID', () async {
@@ -545,16 +605,18 @@ void main() {
     expect(controller.currentConversationId, 'conv-new');
   });
 
-  test('切库后会话列表刷新为新库列表，最近会话缓存跨库失效回退列表最新', () async {
+  test('切库后历史列表保持全量，最近会话跨库可恢复', () async {
     final harness = Harness();
     harness.knowledge.kbById = {
       'kb-a': _kb(id: 'kb-a', name: '库甲'),
       'kb-b': _kb(id: 'kb-b', name: '库乙'),
     };
-    harness.conversations.conversationsByKb = {
-      'kb-a': [_summary('conv-a1', kbId: 'kb-a'), _summary('conv-a2', kbId: 'kb-a')],
-      'kb-b': [_summary('conv-b1', kbId: 'kb-b')],
-    };
+    // 历史跨库全量：切换知识库不改变列表可见范围
+    harness.conversations.conversations = [
+      _summary('conv-a1', kbId: 'kb-a'),
+      _summary('conv-a2', kbId: 'kb-a'),
+      _summary('conv-b1', kbId: 'kb-b'),
+    ];
     harness.conversations.messagesByConversation = {
       'conv-a1': [_message('user', '甲库的问题')],
       'conv-b1': [_message('user', '乙库的问题')],
@@ -568,10 +630,14 @@ void main() {
     await controller.loadInitial(kbId: 'kb-b');
 
     expect(controller.knowledgeBase?.id, 'kb-b');
-    expect(controller.conversations.map((c) => c.id), ['conv-b1']);
-    // 旧库的最近会话缓存不跨库生效，回退到新库列表最新
-    expect(controller.currentConversationId, 'conv-b1');
-    expect(controller.messages.map((m) => m.content), ['乙库的问题']);
+    expect(controller.conversations.map((c) => c.id), [
+      'conv-a1',
+      'conv-a2',
+      'conv-b1',
+    ]);
+    // 最近会话缓存指向旧库会话：历史与知识库解耦后跨库可恢复
+    expect(controller.currentConversationId, 'conv-a1');
+    expect(controller.messages.map((m) => m.content), ['甲库的问题']);
   });
 
   test('并发切库以最新请求为准，旧库慢响应不覆盖新库状态', () async {
@@ -582,10 +648,10 @@ void main() {
       'kb-b': _kb(id: 'kb-b', name: '快库'),
     };
     harness.knowledge.resolveGates['kb-a'] = slowGate;
-    harness.conversations.conversationsByKb = {
-      'kb-a': [_summary('conv-a', kbId: 'kb-a')],
-      'kb-b': [_summary('conv-b', kbId: 'kb-b')],
-    };
+    harness.conversations.conversations = [
+      _summary('conv-a', kbId: 'kb-a'),
+      _summary('conv-b', kbId: 'kb-b'),
+    ];
     harness.conversations.messagesByConversation = {
       'conv-a': [_message('user', '慢库问题')],
       'conv-b': [_message('user', '快库问题')],
@@ -600,7 +666,7 @@ void main() {
     await slow;
 
     expect(controller.knowledgeBase?.id, 'kb-b');
-    expect(controller.conversations.map((c) => c.id), ['conv-b']);
+    expect(controller.conversations.map((c) => c.id), ['conv-a', 'conv-b']);
   });
 
   test('生成中切库先挂起，终态收尾后自动补载新库', () async {
@@ -612,10 +678,10 @@ void main() {
       _kbId: _kb(),
       'kb-c': _kb(id: 'kb-c', name: '生成中切来的库'),
     };
-    harness.conversations.conversationsByKb = {
-      _kbId: [_summary(_conversationId)],
-      'kb-c': [_summary('conv-c', kbId: 'kb-c')],
-    };
+    harness.conversations.conversations = [
+      _summary(_conversationId),
+      _summary('conv-c', kbId: 'kb-c'),
+    ];
     harness.conversations.messagesByConversation = {
       _conversationId: [_message('user', '旧库问题')],
       'conv-c': [_message('user', '新库问题')],
@@ -633,6 +699,11 @@ void main() {
     await _waitFor(() => controller.knowledgeBase?.id == 'kb-c');
 
     expect(controller.generating, isFalse);
-    expect(controller.conversations.map((c) => c.id), ['conv-c']);
+    // 历史列表保持全量；最近会话（旧库会话）跨库恢复
+    expect(controller.conversations.map((c) => c.id), [
+      _conversationId,
+      'conv-c',
+    ]);
+    expect(controller.currentConversationId, _conversationId);
   });
 }

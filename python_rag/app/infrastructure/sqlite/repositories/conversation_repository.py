@@ -14,6 +14,8 @@ from ..transactions import run_in_transaction
 
 # 最后消息摘要的截取长度（换行折叠为空格后按字符截断）
 _EXCERPT_MAX_CHARS = 120
+# 未命名会话默认标题的截取长度（取首条用户消息折叠后的前缀）
+_TITLE_MAX_CHARS = 20
 
 
 class SQLiteConversationRepository(ConversationRepositoryPort):
@@ -58,10 +60,10 @@ class SQLiteConversationRepository(ConversationRepositoryPort):
         """追加消息并返回主键（方法契约见领域 Port 定义）"""
 
         def _add(conn) -> str:
-            exists = conn.execute(
-                "SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)
+            row = conn.execute(
+                "SELECT title FROM conversations WHERE id = ?", (conversation_id,)
             ).fetchone()
-            if exists is None:
+            if row is None:
                 raise EntityNotFoundError(f"会话不存在: {conversation_id}")
             message_id = uuid7()
             now = utc_now_iso()
@@ -74,11 +76,33 @@ class SQLiteConversationRepository(ConversationRepositoryPort):
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 (now, conversation_id),
             )
+            if role == "user" and row[0] is None:
+                # 未命名会话以首条用户消息生成默认标题（仅首次，此后不改）
+                conn.execute(
+                    "UPDATE conversations SET title = ? WHERE id = ?",
+                    (_default_title(content), conversation_id),
+                )
             return message_id
 
         return run_in_transaction(
             self._conn, _add, f"追加 {role} 消息 {conversation_id}"
         )
+
+    def rename(self, conversation_id: str, title: str) -> None:
+        """重命名会话标题（方法契约见领域 Port 定义）"""
+
+        def _rename(conn) -> None:
+            exists = conn.execute(
+                "SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+            if exists is None:
+                raise EntityNotFoundError(f"会话不存在: {conversation_id}")
+            conn.execute(
+                "UPDATE conversations SET title = ? WHERE id = ?",
+                (title, conversation_id),
+            )
+
+        run_in_transaction(self._conn, _rename, f"重命名会话 {conversation_id}")
 
     def get_message_content(self, message_id: str) -> str | None:
         """按主键读取消息正文（方法契约见领域 Port 定义）"""
@@ -89,18 +113,23 @@ class SQLiteConversationRepository(ConversationRepositoryPort):
 
     def list_by_knowledge_base(
         self,
-        kb_id: str,
+        kb_id: str | None,
         *,
         limit: int = 50,
         after_updated_at: str | None = None,
         after_id: str | None = None,
     ) -> list[ConversationSummary]:
-        """列出知识库内会话（方法契约见领域 Port 定义）"""
-        conditions = ["knowledge_base_id = ?"]
-        params: list[object] = [kb_id]
+        """列出会话（方法契约见领域 Port 定义）；kb_id 为 None 时跨库全量"""
+        conditions = []
+        params: list[object] = []
+        if kb_id is not None:
+            conditions.append("knowledge_base_id = ?")
+            params.append(kb_id)
         if after_updated_at is not None and after_id is not None:
             conditions.append("(updated_at < ? OR (updated_at = ? AND id < ?))")
             params.extend([after_updated_at, after_updated_at, after_id])
+        if not conditions:
+            conditions.append("1 = 1")
         params.append(limit)
         rows = self._conn.execute(
             "SELECT id, knowledge_base_id, title, created_at, updated_at"
@@ -188,3 +217,8 @@ def _excerpt(content: str) -> str:
     """折叠空白后按长度截取摘要（不附加省略号，展示交给客户端）"""
     collapsed = " ".join(content.split())
     return collapsed[:_EXCERPT_MAX_CHARS]
+
+
+def _default_title(content: str) -> str:
+    """未命名会话的默认标题：折叠空白后截取首条用户消息前缀"""
+    return " ".join(content.split())[:_TITLE_MAX_CHARS]

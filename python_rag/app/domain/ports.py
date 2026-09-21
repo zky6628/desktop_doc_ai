@@ -525,7 +525,18 @@ class ConversationRepository(ABC):
 
     @abstractmethod
     def add_message(self, conversation_id: str, role: str, content: str) -> str:
-        """追加消息并返回主键（role 为 user/assistant）"""
+        """追加消息并返回主键（role 为 user/assistant）
+
+        未命名会话（标题为空）的首条用户消息同时生成默认标题：空白
+        折叠后截取消息前缀，仅首次生效，此后不随消息变化
+        """
+
+    @abstractmethod
+    def rename(self, conversation_id: str, title: str) -> None:
+        """重命名会话标题；不改变最近活跃排序键（updated_at）。
+
+        会话不存在抛 EntityNotFoundError
+        """
 
     @abstractmethod
     def get_message_content(self, message_id: str) -> str | None:
@@ -534,17 +545,19 @@ class ConversationRepository(ABC):
     @abstractmethod
     def list_by_knowledge_base(
         self,
-        kb_id: str,
+        kb_id: str | None,
         *,
         limit: int = 50,
         after_updated_at: str | None = None,
         after_id: str | None = None,
     ) -> list[ConversationSummary]:
-        """列出知识库内会话（updated_at + id 倒序的 keyset 分页，最近
-        活跃优先），含最后一条消息摘要（无消息时摘要字段为 None）
+        """列出会话（updated_at + id 倒序的 keyset 分页，最近活跃优先），
+        含最后一条消息摘要（无消息时摘要字段为 None）
 
-        after_updated_at/after_id 为上一页末行的排序键，二者必须同时
-        提供才生效；首页两者传 None。limit 上限由调用方约束
+        kb_id 为 None 时不按知识库过滤（跨库全量历史，含已删除知识库
+        的会话）；给定值时仅返回该库会话。after_updated_at/after_id 为
+        上一页末行的排序键，二者必须同时提供才生效；首页两者传 None。
+        limit 上限由调用方约束
         """
 
     @abstractmethod

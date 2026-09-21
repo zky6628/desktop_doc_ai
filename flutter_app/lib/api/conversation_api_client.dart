@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
 import 'api_client_base.dart';
@@ -15,8 +17,11 @@ class ConversationApiClient {
   final ApiClientBase _base;
 
   /// 会话列表（keyset 分页，最近活跃倒序，含最后消息摘要）
+  ///
+  /// kbId 可选：提供时仅返回该库会话，省略时跨库返回全部会话
+  /// （问答页历史与知识库解耦，已删除知识库的会话仍可查看）
   Future<ConversationPage> listConversations({
-    required String kbId,
+    String? kbId,
     String? cursor,
     int? limit,
   }) async {
@@ -24,7 +29,7 @@ class ConversationApiClient {
       (client) => client.get(
         _base.uri('/api/v1/conversations').replace(
               queryParameters: {
-                'kb_id': kbId,
+                'kb_id': ?kbId,
                 'cursor': ?cursor,
                 if (limit != null) 'limit': '$limit',
               },
@@ -61,6 +66,25 @@ class ConversationApiClient {
       throw ApiException(
         code: 'UNKNOWN',
         message: '删除会话返回非 204 状态: ${response.statusCode}',
+        statusCode: response.statusCode,
+      );
+    }
+  }
+
+  /// 重命名会话标题（204；不影响最近活跃排序）
+  Future<void> renameConversation(String conversationId, String title) async {
+    final response = await _base.send(
+      (client) => client.patch(
+        _base.uri('/api/v1/conversations/$conversationId'),
+        body: jsonEncode({'title': title}),
+        headers: {'content-type': 'application/json'},
+      ),
+      expectsNoContent: true,
+    );
+    if (response.statusCode != 204) {
+      throw ApiException(
+        code: 'UNKNOWN',
+        message: '重命名会话返回非 204 状态: ${response.statusCode}',
         statusCode: response.statusCode,
       );
     }

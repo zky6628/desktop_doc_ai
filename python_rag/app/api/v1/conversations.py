@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
 
 from app.domain.errors import EntityNotFoundError
 from app.domain.ports import (
@@ -36,6 +37,12 @@ class ConversationDependencies:
     citation_repo: CitationRepository
 
 
+class ConversationRenameBody(BaseModel):
+    """重命名会话请求体"""
+
+    title: str
+
+
 def create_conversations_router(deps: ConversationDependencies) -> APIRouter:
     """装配会话路由（随 v1 路由挂载，路径前缀由父路由提供）"""
     router = APIRouter()
@@ -43,14 +50,18 @@ def create_conversations_router(deps: ConversationDependencies) -> APIRouter:
     @router.get("/conversations")
     def list_conversations(
         request: Request,
-        kb_id: str,
+        kb_id: str | None = None,
         cursor: str | None = None,
         limit: int | None = None,
     ) -> JSONResponse:
-        """知识库会话列表（keyset 分页，最近活跃倒序，含最后消息摘要）"""
+        """会话列表（keyset 分页，最近活跃倒序，含最后消息摘要）
+
+        kb_id 提供时仅返回该库会话（库存在性校验对已删除知识库放行，
+        其历史会话仍可读）；省略时跨库返回全部会话，供问答页的与知识
+        库解耦的历史列表使用
+        """
         request_id = new_request_id()
-        kb = deps.kb_repo.get(kb_id)
-        if kb is None:
+        if kb_id is not None and deps.kb_repo.get(kb_id) is None:
             return JSONResponse(
                 status_code=404,
                 content=error_envelope(
@@ -127,6 +138,29 @@ def create_conversations_router(deps: ConversationDependencies) -> APIRouter:
         request_id = new_request_id()
         try:
             deps.conversation_repo.delete(conversation_id)
+        except EntityNotFoundError:
+            return JSONResponse(
+                status_code=404,
+                content=error_envelope(
+                    request_id, "CONVERSATION_NOT_FOUND", "会话不存在"
+                ),
+            )
+        return Response(status_code=204)
+
+    @router.patch("/conversations/{conversation_id}")
+    def rename_conversation(
+        conversation_id: str, body: ConversationRenameBody
+    ) -> Response:
+        """重命名会话标题（不改变最近活跃排序键）"""
+        request_id = new_request_id()
+        title = body.title.strip()
+        if not title:
+            return JSONResponse(
+                status_code=400,
+                content=error_envelope(request_id, "INVALID_PARAM", "标题不能为空"),
+            )
+        try:
+            deps.conversation_repo.rename(conversation_id, title)
         except EntityNotFoundError:
             return JSONResponse(
                 status_code=404,

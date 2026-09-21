@@ -81,7 +81,8 @@ def test_list_conversations_includes_last_message_summary(runtime):
     summary = items[0]
     assert summary["id"] == conversation_id
     assert summary["knowledge_base_id"] == env.kb_id
-    assert summary["title"] is None
+    # 未命名会话由首条用户消息生成默认标题（空白折叠，未达截断长度）
+    assert summary["title"] == "什么是年假制度？ 请详细说明。"
     assert summary["last_message"]["role"] == "assistant"
     assert summary["last_message"]["content_excerpt"] == "回答正文"
     assert summary["last_message"]["created_at"]
@@ -165,6 +166,32 @@ def test_deleted_kb_conversations_still_readable(runtime):
     )
     assert messages.status_code == 200
     assert messages.json()["data"]["items"][0]["content"] == "历史问题"
+
+
+def test_list_conversations_without_kb_id_returns_all_libraries(runtime):
+    """省略 kb_id 返回跨库全量会话（含已删除知识库的历史会话）"""
+    env = runtime
+    other_kb_id = insert_kb(env.conn, "第二知识库")
+    in_default = _conversation_with_messages(env, [("user", "默认库的问题")])
+    in_other = env.conversation_repo.ensure_conversation(other_kb_id, None)
+    env.conversation_repo.add_message(in_other, "user", "第二库的问题")
+    env.conn.execute(
+        "UPDATE knowledge_bases SET deleted_at = ? WHERE id = ?",
+        (FIXED_TIME, env.kb_id),
+    )
+
+    response = env.client.get("/api/v1/conversations")
+
+    assert response.status_code == 200
+    items = response.json()["data"]["items"]
+    assert {item["id"] for item in items} == {in_default, in_other}
+
+    # 指定已删除知识库仍可按库过滤查看（410 只约束新建会话与查询）
+    filtered = env.client.get(f"/api/v1/conversations?kb_id={env.kb_id}")
+    assert filtered.status_code == 200
+    assert [item["id"] for item in filtered.json()["data"]["items"]] == [
+        in_default
+    ]
 
 
 def test_messages_returns_full_ascending_history(runtime):
@@ -305,3 +332,63 @@ def test_delete_conversation_rejects_unknown_conversation(runtime):
     response = env.client.delete(f"/api/v1/conversations/{uuid7()}")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "CONVERSATION_NOT_FOUND"
+
+
+def test_first_user_message_names_unnamed_conversation(runtime):
+    """未命名会话以首条用户消息生成默认标题（空白折叠截前缀，仅首次生效）"""
+    env = runtime
+    conversation_id = env.conversation_repo.ensure_conversation(env.kb_id, None)
+    env.conversation_repo.add_message(conversation_id, "user", "年假政策是什么")
+    env.conversation_repo.add_message(conversation_id, "assistant", "回答正文")
+
+    listed = env.client.get(f"/api/v1/conversations?kb_id={env.kb_id}")
+    assert listed.json()["data"]["items"][0]["title"] == "年假政策是什么"
+
+    # 已有标题后不再随消息变化；助手消息不触发命名
+    env.conversation_repo.add_message(conversation_id, "assistant", "第二条")
+    env.conversation_repo.add_message(conversation_id, "user", "第二个问题")
+    relisted = env.client.get(f"/api/v1/conversations?kb_id={env.kb_id}")
+    assert relisted.json()["data"]["items"][0]["title"] == "年假政策是什么"
+
+
+def test_first_user_message_title_truncates_long_question(runtime):
+    """默认标题为空白折叠后的 20 字符前缀（不附加省略号）"""
+    env = runtime
+    conversation_id = env.conversation_repo.ensure_conversation(env.kb_id, None)
+    env.conversation_repo.add_message(
+        conversation_id, "user", "  很长的问题\t\n超过二十个字符的边界在哪里呢继续延伸  "
+    )
+
+    listed = env.client.get(f"/api/v1/conversations?kb_id={env.kb_id}")
+    assert listed.json()["data"]["items"][0]["title"] == (
+        "很长的问题 超过二十个字符的边界在哪里呢"
+    )
+
+
+def test_rename_conversation_updates_title_without_touching_recency(runtime):
+    """重命名 204 且列表反映；不改变最近活跃排序；空标题 400；不存在 404"""
+    env = runtime
+    earlier = _conversation_with_messages(env, [("user", "早的问题")])
+    later = _conversation_with_messages(env, [("user", "晚的问题")])
+
+    response = env.client.patch(
+        f"/api/v1/conversations/{earlier}", json={"title": "  年假制度梳理  "}
+    )
+    assert response.status_code == 204
+
+    listed = env.client.get(f"/api/v1/conversations?kb_id={env.kb_id}")
+    items = listed.json()["data"]["items"]
+    assert [item["id"] for item in items] == [later, earlier]
+    assert items[1]["title"] == "年假制度梳理"
+
+    blank = env.client.patch(
+        f"/api/v1/conversations/{earlier}", json={"title": "   "}
+    )
+    assert blank.status_code == 400
+    assert blank.json()["error"]["code"] == "INVALID_PARAM"
+
+    missing = env.client.patch(
+        "/api/v1/conversations/no-such-conversation", json={"title": "标题"}
+    )
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "CONVERSATION_NOT_FOUND"

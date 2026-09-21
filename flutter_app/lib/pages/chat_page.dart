@@ -223,6 +223,37 @@ class _ChatPageState extends State<ChatPage> {
     }
   }
 
+  Future<void> _renameConversation(ConversationSummaryDto conversation) async {
+    final titleController = TextEditingController(text: conversation.title ?? '');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重命名会话'),
+        content: TextField(
+          controller: titleController,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: '标题'),
+          onSubmitted: (_) => Navigator.pop(context, true),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && titleController.text.trim().isNotEmpty) {
+      unawaited(
+        _controller.renameConversation(conversation.id, titleController.text),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -241,6 +272,8 @@ class _ChatPageState extends State<ChatPage> {
           error: _controller.listError?.message,
           onSelect: (id) => unawaited(_controller.selectConversation(id)),
           onNewConversation: _controller.newConversation,
+          onRename: (conversation) =>
+              unawaited(_renameConversation(conversation)),
           onDelete: (conversation) =>
               unawaited(_confirmDeleteConversation(conversation)),
           onLoadMore: () => unawaited(_controller.loadMoreConversations()),

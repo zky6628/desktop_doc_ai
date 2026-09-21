@@ -160,6 +160,20 @@
         "title": "CloudConfirmationRequest",
         "type": "object"
       },
+      "ConversationRenameBody": {
+        "description": "重命名会话请求体",
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "ConversationRenameBody",
+        "type": "object"
+      },
       "DeleteByIdsRequest": {
         "description": "按ID删除请求模型",
         "properties": {
@@ -519,16 +533,23 @@
     },
     "/api/v1/conversations": {
       "get": {
-        "description": "知识库会话列表（keyset 分页，最近活跃倒序，含最后消息摘要）",
+        "description": "会话列表（keyset 分页，最近活跃倒序，含最后消息摘要）\n\nkb_id 提供时仅返回该库会话（库存在性校验对已删除知识库放行，\n其历史会话仍可读）；省略时跨库返回全部会话，供问答页的与知识\n库解耦的历史列表使用",
         "operationId": "list_conversations_api_v1_conversations_get",
         "parameters": [
           {
             "in": "query",
             "name": "kb_id",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Kb Id",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kb Id"
             }
           },
           {
@@ -623,11 +644,57 @@
           }
         },
         "summary": "Delete Conversation"
+      },
+      "patch": {
+        "description": "重命名会话标题（不改变最近活跃排序键）",
+        "operationId": "rename_conversation_api_v1_conversations__conversation_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationRenameBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Conversation"
       }
     },
     "/api/v1/conversations/{conversation_id}/messages": {
       "get": {
-        "description": "历史消息（升序全量；已删除知识库的会话仍可读）",
+        "description": "历史消息（升序全量；已删除知识库的会话仍可读）\n\n助手消息携带引用快照（不可变事实，切片清理后仍可展示），\n客户端据此在历史会话中定位回答正文中的 [S编号]。",
         "operationId": "list_messages_api_v1_conversations__conversation_id__messages_get",
         "parameters": [
           {
