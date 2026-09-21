@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:desktop_document_ai/api/conversation_api_client.dart';
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
+import 'package:desktop_document_ai/api/ops_api_client.dart';
 import 'package:desktop_document_ai/api/query_api_client.dart';
 import 'package:desktop_document_ai/app/app_preferences.dart';
 import 'package:desktop_document_ai/app/router.dart';
@@ -112,6 +113,7 @@ Future<Widget> _assemble(
             instanceId: appPreferences.clientInstanceId,
           ),
           conversationClient: ConversationApiClient(address: addressStore),
+          opsClient: OpsApiClient(address: addressStore),
         ),
       ),
       themeController: themeController,

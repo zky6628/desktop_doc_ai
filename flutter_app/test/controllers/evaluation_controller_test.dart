@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
+import 'package:desktop_document_ai/api/ops_api_client.dart';
 import 'package:desktop_document_ai/api/query_api_client.dart';
 import 'package:desktop_document_ai/app/server_address.dart';
 import 'package:desktop_document_ai/controllers/evaluation_controller.dart';
@@ -61,6 +62,7 @@ EvaluationController controllerWith(
   return EvaluationController(
     queryClient: QueryApiClient(client: MockClient(handler), address: store),
     knowledgeClient: KnowledgeApiClient(client: MockClient(handler), address: store),
+    opsClient: OpsApiClient(client: MockClient(handler), address: store),
   );
 }
 
@@ -181,5 +183,121 @@ void main() {
     await controller.refresh();
 
     expect(metricsUrls.last.queryParameters['knowledge_base_id'], 'kb-1');
+  });
+
+  test('运行配置开关驱动调试检索可用性', () async {
+    final enabled = controllerWith((request) async {
+      if (request.url.path == '/api/v1/config/public') {
+        return envelope({
+          'model_profiles': [],
+          'pipeline_configs': [],
+          'limits': {},
+          'features': {
+            'worker_enabled': true,
+            'local_debug_enabled': true,
+            'cloud_parsing_available': true,
+          },
+        });
+      }
+      return envelope(kbPayload());
+    });
+    final disabled = controllerWith((request) async {
+      if (request.url.path == '/api/v1/config/public') {
+        return envelope({
+          'model_profiles': [],
+          'pipeline_configs': [],
+          'limits': {},
+          'features': {
+            'worker_enabled': true,
+            'local_debug_enabled': false,
+            'cloud_parsing_available': true,
+          },
+        });
+      }
+      return envelope(kbPayload());
+    });
+
+    await enabled.loadInitial();
+    await disabled.loadInitial();
+
+    expect(enabled.debugAvailable, isTrue);
+    expect(disabled.debugAvailable, isFalse);
+  });
+
+  test('runDebugSearch 携带知识库、问题与覆盖参数并解析结果', () async {
+    final bodies = <Map<String, dynamic>>[];
+    final controller = controllerWith((request) async {
+      if (request.url.path == '/api/v1/search') {
+        bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        return envelope({
+          'candidates': [
+            {
+              'chunk_id': 'chunk-1',
+              'document_version_id': 'v-1',
+              'file_name': '手册.pdf',
+              'section_path': ['第一章'],
+              'vector_rank': 1,
+              'vector_score': 0.92,
+              'rrf_rank': 1,
+              'rrf_score': 0.0328,
+              'rerank_rank': null,
+              'rerank_score': null,
+            },
+          ],
+          'stages': {
+            'vector_hits': 5,
+            'keyword_hits': 3,
+            'fused': 5,
+            'reranked': 0,
+            'rerank_degraded': true,
+            'dropped_hit_count': 0,
+          },
+          'config': {'overridden': {'fused_top_k': 5}},
+        });
+      }
+      return envelope(kbPayload());
+    });
+    await controller.setKbFilter('kb-1');
+
+    await controller.runDebugSearch(
+      question: '带薪年假',
+      fusedTopK: 5,
+      rerankTopN: 2,
+    );
+
+    expect(bodies.single['knowledge_base_id'], 'kb-1');
+    expect(bodies.single['question'], '带薪年假');
+    expect(bodies.single['fused_top_k'], 5);
+    expect(bodies.single['rerank_top_n'], 2);
+    expect(bodies.single.containsKey('vector_top_k'), isFalse);
+    expect(controller.debugError, isNull);
+    expect(controller.debugResult!.candidates.single.fileName, '手册.pdf');
+    expect(controller.debugResult!.stages.rerankDegraded, isTrue);
+    expect(controller.debugResult!.overridden, {'fused_top_k': 5});
+  });
+
+  test('未选定知识库或空白问题不发起调试检索', () async {
+    var searchCalls = 0;
+    final controller = controllerWith((request) async {
+      if (request.url.path == '/api/v1/search') {
+        searchCalls += 1;
+        return envelope({
+          'candidates': [],
+          'stages': {},
+          'config': {'overridden': {}},
+        });
+      }
+      return envelope(kbPayload());
+    });
+
+    // 未选定知识库（kbFilter 为 null）
+    await controller.runDebugSearch(question: '问题');
+    expect(searchCalls, 0);
+
+    // 选定后空白问题同样不发起
+    await controller.setKbFilter('kb-1');
+    await controller.runDebugSearch(question: '   ');
+    expect(searchCalls, 0);
+    expect(controller.debugResult, isNull);
   });
 }

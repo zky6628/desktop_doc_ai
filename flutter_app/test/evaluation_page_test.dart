@@ -1,4 +1,4 @@
-// 评测页 Widget 测试：指标卡片、空态与错误重试态。
+// 评测页 Widget 测试：指标卡片、空态、错误重试态与调试检索显隐。
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
+import 'package:desktop_document_ai/api/ops_api_client.dart';
 import 'package:desktop_document_ai/api/query_api_client.dart';
 import 'package:desktop_document_ai/app/server_address.dart';
 import 'package:desktop_document_ai/pages/evaluation_page.dart';
@@ -54,6 +55,54 @@ Map<String, dynamic> kbPayload() => {
       'next_cursor': null,
     };
 
+Map<String, dynamic> configPayload({required bool localDebug}) => {
+      'model_profiles': [],
+      'pipeline_configs': [],
+      'limits': {
+        'max_running': 3,
+        'max_pending': 50,
+        'max_non_terminal': 53,
+        'max_file_mb': 100,
+        'max_batch_files': 50,
+      },
+      'features': {
+        'worker_enabled': true,
+        'local_debug_enabled': localDebug,
+        'cloud_parsing_available': true,
+      },
+    };
+
+Map<String, dynamic> searchPayload() => {
+      'candidates': [
+        {
+          'chunk_id': 'chunk-1',
+          'document_id': 'doc-1',
+          'document_version_id': 'v-1',
+          'file_name': '手册.pdf',
+          'version_no': 1,
+          'page_no': 3,
+          'section_path': ['第一章', '年假'],
+          'vector_rank': 1,
+          'vector_score': 0.92,
+          'keyword_rank': null,
+          'keyword_score': null,
+          'rrf_rank': 1,
+          'rrf_score': 0.0328,
+          'rerank_rank': 1,
+          'rerank_score': 0.97,
+        },
+      ],
+      'stages': {
+        'vector_hits': 5,
+        'keyword_hits': 3,
+        'fused': 5,
+        'reranked': 1,
+        'rerank_degraded': false,
+        'dropped_hit_count': 0,
+      },
+      'config': {'overridden': {'fused_top_k': 5}},
+    };
+
 Future<void> pumpEvaluation(
   WidgetTester tester,
   Future<http.Response> Function(http.Request) handler,
@@ -68,6 +117,7 @@ Future<void> pumpEvaluation(
             client: MockClient(handler),
             address: store,
           ),
+          opsClient: OpsApiClient(client: MockClient(handler), address: store),
         ),
       ),
     ),
@@ -146,5 +196,60 @@ void main() {
     await tester.tap(find.text('全部知识库'));
     await tester.pumpAndSettle();
     expect(find.text('评测库').last, findsOneWidget);
+  });
+
+  testWidgets('本地调试关闭时调试检索区域不渲染', (tester) async {
+    await pumpEvaluation(tester, (request) async {
+      if (request.url.path == '/api/v1/config/public') {
+        return envelope(configPayload(localDebug: false));
+      }
+      if (request.url.path == '/api/v1/metrics/queries') {
+        return envelope(metricsPayload(total: 5));
+      }
+      return envelope(kbPayload());
+    });
+    await tester.pump();
+
+    expect(find.text('调试检索'), findsNothing);
+  });
+
+  testWidgets('本地调试开启时渲染调试检索并展示候选明细', (tester) async {
+    await pumpEvaluation(tester, (request) async {
+      if (request.url.path == '/api/v1/config/public') {
+        return envelope(configPayload(localDebug: true));
+      }
+      if (request.url.path == '/api/v1/metrics/queries') {
+        return envelope(metricsPayload(total: 5));
+      }
+      if (request.url.path == '/api/v1/search') {
+        // 请求体携带选定知识库与问题
+        expect(request.url.path, '/api/v1/search');
+        return envelope(searchPayload());
+      }
+      return envelope(kbPayload());
+    });
+    await tester.pump();
+
+    expect(find.text('调试检索'), findsOneWidget);
+    expect(find.text('请先在上方选择具体知识库'), findsOneWidget);
+
+    // 选定知识库后输入问题检索
+    await tester.tap(find.text('全部知识库'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('评测库').last);
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, '输入调试问题（不产生查询记录与指标）'),
+      '带薪年假',
+    );
+    await tester.tap(find.text('检索'));
+    await tester.pumpAndSettle();
+
+    // 阶段规模与候选明细（零正文，仅定位事实与分数）
+    expect(find.text('融合 5'), findsOneWidget);
+    expect(find.text('手册.pdf'), findsOneWidget);
+    expect(find.text('1 @ 0.9200'), findsOneWidget);
+    expect(find.text('重排 1'), findsOneWidget);
+    expect(find.text('fused_top_k=5'), findsOneWidget);
   });
 }

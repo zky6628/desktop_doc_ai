@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'api/conversation_api_client.dart';
 import 'api/knowledge_api_client.dart';
+import 'api/ops_api_client.dart';
 import 'api/query_api_client.dart';
 import 'app/app_preferences.dart';
 import 'app/router.dart';
@@ -34,6 +35,7 @@ Future<void> main() async {
     instanceId: preferences.clientInstanceId,
   );
   final conversationClient = ConversationApiClient(address: addressStore);
+  final opsClient = OpsApiClient(address: addressStore);
   final bundle = ApiBundle(
     preferences: preferences,
     addressStore: addressStore,
@@ -41,6 +43,7 @@ Future<void> main() async {
     knowledgeClient: knowledgeClient,
     queryClient: queryClient,
     conversationClient: conversationClient,
+    opsClient: opsClient,
   );
   // 问答控制器为全局单例：外壳侧边栏（新建会话/会话列表）与问答页共享
   // 同一实例；知识库解析经壳层控制器广播实现跨页同步。会话列表为跨库
