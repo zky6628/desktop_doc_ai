@@ -126,6 +126,16 @@ Future<void> pumpEvaluation(
 }
 
 void main() {
+  /// 新增的调参/评测卡片位于页面顶部，指标内容通常在视口外，需滚动
+  Future<void> scrollUntilTextVisible(WidgetTester tester, String text) async {
+    await tester.scrollUntilVisible(
+      find.text(text),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+  }
+
   testWidgets('有运行记录时渲染指标卡片', (tester) async {
     await pumpEvaluation(tester, (request) async {
       if (request.url.path == '/api/v1/metrics/queries') {
@@ -135,6 +145,7 @@ void main() {
     });
     await tester.pump();
 
+    await scrollUntilTextVisible(tester, '运行概览');
     expect(find.text('运行概览'), findsOneWidget);
     expect(find.text('TTFT 首字延迟（服务端）'), findsOneWidget);
     expect(find.text('Token 用量'), findsOneWidget);
@@ -154,6 +165,7 @@ void main() {
     });
     await tester.pump();
 
+    await scrollUntilTextVisible(tester, '暂无查询运行记录');
     expect(find.text('暂无查询运行记录'), findsOneWidget);
     expect(find.text('在问答页提问后，此处展示查询指标与延迟分位'), findsOneWidget);
   });
@@ -230,6 +242,7 @@ void main() {
     });
     await tester.pump();
 
+    await scrollUntilTextVisible(tester, '调试检索');
     expect(find.text('调试检索'), findsOneWidget);
     expect(find.text('请先在上方选择具体知识库'), findsOneWidget);
 
@@ -251,5 +264,44 @@ void main() {
     expect(find.text('1 @ 0.9200'), findsOneWidget);
     expect(find.text('重排 1'), findsOneWidget);
     expect(find.text('fused_top_k=5'), findsOneWidget);
+  });
+
+  testWidgets('切片参数卡片渲染在役值并可保存', (tester) async {
+    await pumpEvaluation(tester, (request) async {
+      if (request.url.path == '/api/v1/config/chunking') {
+        return envelope({
+          'parent_chunk_chars': 800,
+          'child_chunk_chars': 300,
+          'is_default': false,
+        });
+      }
+      if (request.url.path == '/api/v1/metrics/queries') {
+        return envelope(metricsPayload(total: 0));
+      }
+      return envelope(kbPayload());
+    });
+    await tester.pump();
+
+    expect(find.text('切片参数'), findsOneWidget);
+    expect(find.text('当前为默认值'), findsNothing);
+    // 输入框回填服务端在役值
+    expect(find.widgetWithText(TextField, '父切片预算'), findsOneWidget);
+  });
+
+  testWidgets('评测卡片未选知识库时提示且开始按钮禁用', (tester) async {
+    await pumpEvaluation(tester, (request) async {
+      if (request.url.path == '/api/v1/metrics/queries') {
+        return envelope(metricsPayload(total: 0));
+      }
+      return envelope(kbPayload());
+    });
+    await tester.pump();
+
+    expect(find.text('切片参数评测'), findsOneWidget);
+    expect(find.text('请先在上方选择具体知识库'), findsOneWidget);
+    final button = tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, '开始评测'),
+    );
+    expect(button.onPressed, isNull);
   });
 }

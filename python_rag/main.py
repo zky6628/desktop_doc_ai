@@ -6,19 +6,22 @@ FastAPI RAG 服务主入口
 """
 
 # 导入系统模块
+# 导入 IO 模块，用于重新设置标准流的编码
+
+# 导入 JSON 模块
+
+# 导入日志模块
+import logging
 import os
 import sys
 import threading
-# 导入 IO 模块，用于重新设置标准流的编码
-import io
-# 导入 JSON 模块
-import json
+
 # 导入时间模块（用于性能监控）
 import time
-# 导入日志模块
-import logging
+
 # 导入 traceback 模块（用于打印完整异常堆栈）
 import traceback
+
 # 导入 pathlib 模块（用于路径处理）
 from pathlib import Path
 
@@ -28,12 +31,11 @@ if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
 # 导入 FastAPI 相关模块
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any, Union
+from typing import Any
 
+from fastapi import FastAPI, File, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 # ===================== 日志配置 =====================
 
@@ -116,9 +118,9 @@ class ErrorCode:
 def make_response(
     success: bool,
     data: Any = None,
-    error_code: Optional[str] = None,
-    error_msg: Optional[str] = None
-) -> Dict[str, Any]:
+    error_code: str | None = None,
+    error_msg: str | None = None
+) -> dict[str, Any]:
     """
     构造统一 API 响应格式
     :param success: 是否成功
@@ -140,7 +142,7 @@ def make_response(
     return response
 
 
-def success_response(data: Any = None) -> Dict[str, Any]:
+def success_response(data: Any = None) -> dict[str, Any]:
     """构造成功响应"""
     return make_response(success=True, data=data)
 
@@ -148,7 +150,7 @@ def success_response(data: Any = None) -> Dict[str, Any]:
 def error_response(
     error_code: str = ErrorCode.UNKNOWN,
     error_msg: str = "未知错误"
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """构造失败响应"""
     return make_response(success=False, error_code=error_code, error_msg=error_msg)
 
@@ -160,28 +162,36 @@ from dotenv import load_dotenv
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 # 导入 DashScope（阿里云 Qwen 服务）SDK，用于调用 Qwen 的 Embedding 和 LLM 接口
+# 工作台 v1 运行时：SQLite 事实源 + 任务化导入（/api/v1）
+import chromadb
 import dashscope
+
 # 从 DashScope 导入文本嵌入类
 from dashscope import TextEmbedding
 
-# 导入 LangChain 的文本分割器，用于将长文本切分为小块
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-# 导入 LangChain 的文档加载器，用于加载文本文件
-from langchain_community.document_loaders import TextLoader
-# 导入 LangChain 的 Document 类，用于构造文档对象
-from langchain_core.documents import Document
 # 导入 LangChain 的 Chroma 向量数据库封装
 from langchain_chroma import Chroma
+
+# 导入 LangChain 的文档加载器，用于加载文本文件
+from langchain_community.document_loaders import TextLoader
+
+# 导入 LangChain 的 Document 类，用于构造文档对象
+from langchain_core.documents import Document
+
 # 导入 LangChain 的 Embeddings 基类，用于自定义 Embedding
 from langchain_core.embeddings import Embeddings
-# 导入自定义文件解析器（支持 TXT/DOCX/PDF）
-from file_parser import parse_file, SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
-# 工作台 v1 运行时：SQLite 事实源 + 任务化导入（/api/v1）
-import chromadb
+
+# 导入 LangChain 的输出解析器，用于解析 LLM 输出
+# 导入 LangChain 的提示词模板，用于构建对话提示
+# 导入 LangChain 的可运行组件，用于构建 RAG 管道
+# 导入 LangChain 的文本分割器，用于将长文本切分为小块
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from app.api.v1 import (
     ApiV1Dependencies,
     ConversationDependencies,
     DocumentDependencies,
+    EvaluationDependencies,
     KnowledgeBaseDependencies,
     MetricsDependencies,
     OpsDependencies,
@@ -192,16 +202,16 @@ from app.api.v1 import (
 )
 from app.domain.ids import uuid7
 from app.infrastructure.embedding import DashScopeEmbeddingGateway
+from app.infrastructure.evaluation import EvaluationRunService
 from app.infrastructure.generation import DashScopeGenerationGateway
-from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.ingest import ImportOrchestrator
+from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.mineru import MinerUClient
 from app.infrastructure.query import QueryOrchestrator
 from app.infrastructure.rerank import DashScopeRerankGateway
 from app.infrastructure.retrieval import ContextResolver, RetrievalService
 from app.infrastructure.sqlite.connection import connect
 from app.infrastructure.sqlite.migrations import apply_migrations
-from app.infrastructure.sqlite.repositories.import_repository import SQLiteImportRepository
 from app.infrastructure.sqlite.repositories import (
     SQLiteChunkRepository,
     SQLiteCitationRepository,
@@ -211,24 +221,32 @@ from app.infrastructure.sqlite.repositories import (
     SQLiteDeletionRepository,
     SQLiteDocumentRepository,
     SQLiteDocumentVersionRepository,
+    SQLiteEmbeddingCacheRepository,
+    SQLiteEvaluationRunRepository,
     SQLiteExternalTaskRepository,
     SQLiteIndexVersionRepository,
     SQLiteKnowledgeBaseRepository,
     SQLiteQueryEventStore,
     SQLiteQueryRunRepository,
+    SQLiteSystemSettingsRepository,
+)
+from app.infrastructure.sqlite.repositories.import_repository import (
+    SQLiteImportRepository,
 )
 from app.infrastructure.sqlite.repositories.task_repository import SQLiteTaskRepository
 from app.infrastructure.storage.upload_staging import UploadStagingStore
 from app.infrastructure.vectorindex import ChromaVectorIndexAdapter
 from app.infrastructure.worker import ImportTaskWorker
+from file_parser import SUPPORTED_EXTENSIONS as PARSER_SUPPORTED_EXTENSIONS
+
+# 导入自定义文件解析器（支持 TXT/DOCX/PDF）
+from file_parser import parse_file
+
 # 导入 LLM 封装类（支持网络模型和本地 Ollama 模型）
-from llm_wrapper import LLMWrapper, LLMProviderType, DEFAULT_NETWORK_MODEL, DEFAULT_LOCAL_MODEL
-# 导入 LangChain 的提示词模板，用于构建对话提示
-from langchain_core.prompts import ChatPromptTemplate
-# 导入 LangChain 的可运行组件，用于构建 RAG 管道
-from langchain_core.runnables import RunnablePassthrough
-# 导入 LangChain 的输出解析器，用于解析 LLM 输出
-from langchain_core.output_parsers import StrOutputParser
+from llm_wrapper import (
+    LLMProviderType,
+    LLMWrapper,
+)
 
 # ===================== 环境变量与路径配置 =====================
 
@@ -452,7 +470,7 @@ def load_knowledge_file(file_path: str):
         except ValueError:
             raise
         except Exception as e:
-            raise ValueError(f"文件读取失败: {str(e)}")
+            raise ValueError(f"文件读取失败: {e!s}")
 
         docs = [Document(page_content=text, metadata={"source": file_path})]
     else:
@@ -471,7 +489,7 @@ def load_knowledge_file(file_path: str):
             except Exception:
                 raise ValueError("无法解析文件编码，请使用 UTF-8 或 GBK 编码的文本文件")
         except Exception as e:
-            raise ValueError(f"文件读取失败: {str(e)}")
+            raise ValueError(f"文件读取失败: {e!s}")
 
     # 检查文档内容是否为空
     if not docs or all(len(doc.page_content.strip()) == 0 for doc in docs):
@@ -533,7 +551,7 @@ retriever = db_manager.as_retriever(k=3)
 
 # ===================== RAG 问答封装 =====================
 
-def run_rag_with_sources(question: str, model_id: Optional[str] = None) -> Dict[str, Any]:
+def run_rag_with_sources(question: str, model_id: str | None = None) -> dict[str, Any]:
     """
     执行 RAG 问答，同时返回答案、检索到的源文档和耗时统计
     :param question: 用户问题
@@ -597,7 +615,7 @@ def run_rag_with_sources(question: str, model_id: Optional[str] = None) -> Dict[
     }
 
 
-def _find_model_config(model_id: str) -> Optional[Dict[str, Any]]:
+def _find_model_config(model_id: str) -> dict[str, Any] | None:
     """根据模型 ID 查找配置"""
     for m in AVAILABLE_MODELS:
         if m["id"] == model_id:
@@ -605,7 +623,7 @@ def _find_model_config(model_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _extract_model_name(model_id: str, config: Dict[str, Any]) -> str:
+def _extract_model_name(model_id: str, config: dict[str, Any]) -> str:
     """从模型 ID 中提取实际模型名"""
     if model_id.startswith("ollama:"):
         return model_id[len("ollama:"):]
@@ -616,7 +634,7 @@ def _extract_model_name(model_id: str, config: Dict[str, Any]) -> str:
 class QueryRequest(BaseModel):
     """RAG 问答请求模型"""
     question: str = Field(..., description="用户的问题")
-    model_id: Optional[str] = Field(default=None, description="模型 ID（可选，不指定则使用默认模型）")
+    model_id: str | None = Field(default=None, description="模型 ID（可选，不指定则使用默认模型）")
 
 class SearchRequest(BaseModel):
     """相似度检索请求模型"""
@@ -629,12 +647,12 @@ class AddFileRequest(BaseModel):
 
 class AddTextsRequest(BaseModel):
     """添加文本请求模型"""
-    texts: List[str] = Field(..., description="文本列表")
-    metadatas: Optional[List[Dict[str, Any]]] = Field(default=None, description="元数据列表")
+    texts: list[str] = Field(..., description="文本列表")
+    metadatas: list[dict[str, Any]] | None = Field(default=None, description="元数据列表")
 
 class DeleteByIdsRequest(BaseModel):
     """按ID删除请求模型"""
-    ids: List[str] = Field(..., description="文档ID列表")
+    ids: list[str] = Field(..., description="文档ID列表")
 
 class DeleteBySourceRequest(BaseModel):
     """按源文件路径删除请求模型"""
@@ -644,7 +662,7 @@ class UpdateTextRequest(BaseModel):
     """更新文档请求模型"""
     id: str = Field(..., description="文档ID")
     text: str = Field(..., description="新的文本内容")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="新的元数据")
+    metadata: dict[str, Any] | None = Field(default=None, description="新的元数据")
 
 # ===================== FastAPI 应用初始化 =====================
 
@@ -699,45 +717,6 @@ _workbench_orchestrator = ImportOrchestrator(
     import_repo=SQLiteImportRepository(_workbench_conn),
 )
 _workbench_task_repo = SQLiteTaskRepository(_workbench_conn)
-
-# 解析 Worker：单线程消费导入任务（解析结果落库的唯一写入方）。
-# 默认启用，WORKBENCH_WORKER_ENABLED 设为 0/false/off 关闭；关闭时
-# 导入任务停留在队列，由下次启动的恢复流程继续推进。云端解析令牌
-# 缺失时 Worker 仍消费本地路线，云端任务在提交时按认证失败处理
-_import_worker: ImportTaskWorker | None = None
-_worker_thread: threading.Thread | None = None
-if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "false", "off"):
-    _mineru_token = os.getenv("MINERU_API_TOKEN") or ""
-    _dashscope_key = os.getenv("DASHSCOPE_API_KEY") or ""
-    _import_worker = ImportTaskWorker(
-        task_repo=_workbench_task_repo,
-        document_repo=SQLiteDocumentRepository(_workbench_conn),
-        version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
-        content_repo=SQLiteContentRepository(_workbench_conn),
-        external_repo=SQLiteExternalTaskRepository(_workbench_conn),
-        index_repo=SQLiteIndexVersionRepository(_workbench_conn),
-        chunk_repo=SQLiteChunkRepository(_workbench_conn),
-        config_repo=SQLiteConfigRepository(_workbench_conn),
-        embedding_gateway=(
-            DashScopeEmbeddingGateway(api_key=_dashscope_key) if _dashscope_key else None
-        ),
-        vector_index=ChromaVectorIndexAdapter(
-            chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR)
-        ),
-        text_tokenizer=JiebaTokenizer(),
-        keyword_index=SQLiteFtsKeywordIndex(_workbench_conn),
-        mineru_client=MinerUClient(api_token=_mineru_token) if _mineru_token else None,
-        work_dir=os.path.join(WORKBENCH_STAGING_DIR, "cloud_results"),
-        worker_id=f"worker-{uuid7()}",
-    )
-    # 线程引用供健康探针判断工作循环存活
-    _worker_thread = _import_worker.start_background()
-
-    @app.on_event("shutdown")
-    def _stop_import_worker() -> None:
-        """应用关闭时请求 Worker 停止：进行中的轮询在下一个等待间隔内退出"""
-        if _import_worker is not None:
-            _import_worker.stop()
 
 # 查询链路装配：实时问答编排（检索→重排→组装→流式生成→引用快照）。
 # 启动恢复把进程重启残留的未完成查询置为失败（与任务恢复语义对齐）
@@ -802,6 +781,111 @@ try:
 except Exception as _recover_error:  # noqa: BLE001 - 恢复失败不阻断启动
     print(f"[workbench] 查询恢复失败: {type(_recover_error).__name__}")
 
+
+# ===================== 评测编排桥接 =====================
+
+_evaluation_run_repo = SQLiteEvaluationRunRepository(_workbench_conn)
+_evaluation_settings_repo = SQLiteSystemSettingsRepository(_workbench_conn)
+
+
+def _kb_active_version_ids(kb_id: str) -> list[str]:
+    """知识库当前全部活动文档版本（评测参评集合快照）"""
+    rows = _workbench_conn.execute(
+        "SELECT dv.id FROM document_versions dv"
+        " JOIN documents d ON d.id = dv.document_id"
+        " WHERE d.knowledge_base_id = ?"
+        "   AND dv.id = d.active_document_version_id"
+        " ORDER BY dv.id",
+        (kb_id,),
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def _launch_evaluation_query(kb_id: str, question: str) -> str:
+    """评测问题经真实查询链路执行（指标事实照常落库）"""
+    start = _query_deps.orchestrator.start_query(kb_id=kb_id, question=question)
+    return start.run.id
+
+
+def _read_query_metrics(run_id: str) -> dict:
+    """查询运行的评测聚合口径行（与查询指标事实同源）"""
+    row = _workbench_conn.execute(
+        "SELECT state, refused, rerank_degraded, server_ttft_ms,"
+        " input_tokens, output_tokens FROM query_runs WHERE id = ?",
+        (run_id,),
+    ).fetchone()
+    if row is None:
+        return {
+            "state": "failed",
+            "refused": 0,
+            "rerank_degraded": 0,
+            "server_ttft_ms": None,
+            "input_tokens": None,
+            "output_tokens": None,
+        }
+    return {
+        "state": row[0],
+        "refused": bool(row[1]),
+        "rerank_degraded": bool(row[2]),
+        "server_ttft_ms": row[3],
+        "input_tokens": row[4],
+        "output_tokens": row[5],
+    }
+
+
+_evaluation_service = EvaluationRunService(
+    evaluation_repo=_evaluation_run_repo,
+    settings_repo=_evaluation_settings_repo,
+    content_repo=SQLiteContentRepository(_workbench_conn),
+    version_ids_reader=_kb_active_version_ids,
+    query_launcher=_launch_evaluation_query,
+    query_metrics_reader=_read_query_metrics,
+)
+
+# 解析 Worker：单线程消费导入任务（解析结果落库的唯一写入方）。
+# 默认启用，WORKBENCH_WORKER_ENABLED 设为 0/false/off 关闭；关闭时
+# 导入任务停留在队列，由下次启动的恢复流程继续推进。云端解析令牌
+# 缺失时 Worker 仍消费本地路线，云端任务在提交时按认证失败处理。
+# 评测编排列为可选依赖（评测服务与运行仓储，随查询链路装配就绪）
+_import_worker: ImportTaskWorker | None = None
+_worker_thread: threading.Thread | None = None
+if (os.getenv("WORKBENCH_WORKER_ENABLED") or "1").strip().lower() not in ("0", "false", "off"):
+    _mineru_token = os.getenv("MINERU_API_TOKEN") or ""
+    _dashscope_key = os.getenv("DASHSCOPE_API_KEY") or ""
+    _import_worker = ImportTaskWorker(
+        task_repo=_workbench_task_repo,
+        document_repo=SQLiteDocumentRepository(_workbench_conn),
+        version_repo=SQLiteDocumentVersionRepository(_workbench_conn),
+        content_repo=SQLiteContentRepository(_workbench_conn),
+        external_repo=SQLiteExternalTaskRepository(_workbench_conn),
+        index_repo=SQLiteIndexVersionRepository(_workbench_conn),
+        chunk_repo=SQLiteChunkRepository(_workbench_conn),
+        config_repo=SQLiteConfigRepository(_workbench_conn),
+        settings_repo=SQLiteSystemSettingsRepository(_workbench_conn),
+        embedding_cache=SQLiteEmbeddingCacheRepository(_workbench_conn),
+        evaluation_repo=_evaluation_run_repo,
+        evaluation_service=_evaluation_service,
+        embedding_gateway=(
+            DashScopeEmbeddingGateway(api_key=_dashscope_key) if _dashscope_key else None
+        ),
+        vector_index=ChromaVectorIndexAdapter(
+            chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR)
+        ),
+        text_tokenizer=JiebaTokenizer(),
+        keyword_index=SQLiteFtsKeywordIndex(_workbench_conn),
+        mineru_client=MinerUClient(api_token=_mineru_token) if _mineru_token else None,
+        work_dir=os.path.join(WORKBENCH_STAGING_DIR, "cloud_results"),
+        worker_id=f"worker-{uuid7()}",
+    )
+    # 线程引用供健康探针判断工作循环存活
+    _worker_thread = _import_worker.start_background()
+
+    @app.on_event("shutdown")
+    def _stop_import_worker() -> None:
+        """应用关闭时请求 Worker 停止：进行中的轮询在下一个等待间隔内退出"""
+        if _import_worker is not None:
+            _import_worker.stop()
+
 app.include_router(
     create_api_router(
         ApiV1Dependencies(
@@ -847,6 +931,7 @@ app.include_router(
                 mineru_configured=bool(os.getenv("MINERU_API_TOKEN")),
                 dashscope_configured=bool(os.getenv("DASHSCOPE_API_KEY")),
                 local_debug_enabled=WORKBENCH_LOCAL_DEBUG,
+                settings_repo=SQLiteSystemSettingsRepository(_workbench_conn),
             ),
             search=SearchDependencies(
                 kb_repo=_query_kb_repo,
@@ -858,6 +943,13 @@ app.include_router(
                     else None
                 ),
                 local_debug_enabled=WORKBENCH_LOCAL_DEBUG,
+            ),
+            evaluations=EvaluationDependencies(
+                conn=_workbench_conn,
+                kb_repo=SQLiteKnowledgeBaseRepository(_workbench_conn),
+                task_repo=_workbench_task_repo,
+                evaluation_repo=_evaluation_run_repo,
+                evaluation_service=_evaluation_service,
             ),
         )
     )
@@ -917,7 +1009,7 @@ async def log_requests(request: Request, call_next):
 
 # ===================== 异常处理辅助函数 =====================
 
-def _handle_exception(e: Exception) -> Dict[str, Any]:
+def _handle_exception(e: Exception) -> dict[str, Any]:
     """
     将异常转换为统一错误响应，同时记录错误日志和完整堆栈
     """
@@ -943,13 +1035,13 @@ def _handle_exception(e: Exception) -> Dict[str, Any]:
         return error_response(ErrorCode.TIMEOUT, "处理超时，请稍后重试")
     elif "embedding" in str(e).lower() or "qwen" in str(e).lower() or "dashscope" in str(e).lower():
         logger.error(f"AI 接口调用失败: {e}")
-        return error_response(ErrorCode.API_ERROR, f"AI 接口调用失败: {str(e)}")
+        return error_response(ErrorCode.API_ERROR, f"AI 接口调用失败: {e!s}")
     elif "chroma" in str(e).lower() or "database" in str(e).lower() or "db" in str(e).lower():
         logger.error(f"数据库错误: {e}")
-        return error_response(ErrorCode.DB_ERROR, f"数据库错误: {str(e)}")
+        return error_response(ErrorCode.DB_ERROR, f"数据库错误: {e!s}")
     else:
         logger.error(f"未知异常 [{type(e).__name__}]: {e}")
-        return error_response(ErrorCode.UNKNOWN, f"{type(e).__name__}: {str(e)}")
+        return error_response(ErrorCode.UNKNOWN, f"{type(e).__name__}: {e!s}")
 
 
 # ===================== API 路由 =====================

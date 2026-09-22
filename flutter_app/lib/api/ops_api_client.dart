@@ -60,4 +60,73 @@ class OpsApiClient {
     );
     return SearchDebugResult.fromJson(_base.dataOf(response));
   }
+
+  /// 在役切片参数（当前生效值与是否为默认预算）
+  Future<ChunkingConfig> getChunkingConfig() async {
+    final response = await _base.send(
+      (client) => client.get(_base.uri('/api/v1/config/chunking')),
+    );
+    return ChunkingConfig.fromJson(_base.dataOf(response));
+  }
+
+  /// 写入在役切片参数（写入即对后续导入/重建生效；非法值 422）
+  Future<ChunkingConfig> putChunkingConfig({
+    required int parentChunkChars,
+    required int childChunkChars,
+  }) async {
+    final response = await _base.send(
+      (client) => client.put(
+        _base.uri('/api/v1/config/chunking'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'parent_chunk_chars': parentChunkChars,
+          'child_chunk_chars': childChunkChars,
+        }),
+      ),
+    );
+    return ChunkingConfig.fromJson(_base.dataOf(response));
+  }
+
+  /// 创建切片参数对比评测运行（服务端独占校验，冲突 409）
+  Future<EvaluationRun> createEvaluationRun({
+    required String knowledgeBaseId,
+    required List<String> questions,
+    required List<ChunkingParams> paramGroups,
+  }) async {
+    final response = await _base.send(
+      (client) => client.post(
+        _base.uri('/api/v1/evaluation-runs'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'knowledge_base_id': knowledgeBaseId,
+          'questions': questions,
+          'param_groups': [
+            for (final group in paramGroups)
+              {
+                'parent_chunk_chars': group.parentChunkChars,
+                'child_chunk_chars': group.childChunkChars,
+              },
+          ],
+        }),
+      ),
+    );
+    return EvaluationRun.fromJson(_base.dataOf(response));
+  }
+
+  /// 读取评测运行（状态、进度与对比结果）
+  Future<EvaluationRun> getEvaluationRun(String runId) async {
+    final response = await _base.send(
+      (client) => client.get(_base.uri('/api/v1/evaluation-runs/$runId')),
+    );
+    return EvaluationRun.fromJson(_base.dataOf(response));
+  }
+
+  /// 请求取消评测运行（幂等）
+  Future<EvaluationRun> cancelEvaluationRun(String runId) async {
+    final response = await _base.send(
+      (client) =>
+          client.post(_base.uri('/api/v1/evaluation-runs/$runId/cancel')),
+    );
+    return EvaluationRun.fromJson(_base.dataOf(response));
+  }
 }

@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
-"""层次切片纯函数测试：确定性、父子结构、表格参与与预算边界"""
+"""层次切片纯函数测试：确定性、父子结构、表格参与、预算边界与参数解析"""
+import pytest
+
 from app.domain.chunking import (
     CHILD_CHUNK_CHARS,
+    DEFAULT_CHUNKING_PARAMS,
     PARENT_CHUNK_CHARS,
     StoredBlock,
     chunk_blocks,
     chunking_config_json,
+    resolve_chunking_params,
+    validate_chunking_params,
 )
 from app.domain.parsing import BlockType, TableEvidence, make_block
 
@@ -44,8 +49,8 @@ def test_deterministic_output_for_same_input():
         _stored(BlockType.PARAGRAPH, 1, text="正文内容", section_path="第一章"),
     ]
 
-    first = chunk_blocks(blocks)
-    second = chunk_blocks(list(blocks))
+    first = chunk_blocks(blocks, DEFAULT_CHUNKING_PARAMS)
+    second = chunk_blocks(list(blocks), DEFAULT_CHUNKING_PARAMS)
 
     assert first == second
 
@@ -58,7 +63,7 @@ def test_parent_child_structure_and_ordinal_sequence():
         _stored(BlockType.PARAGRAPH, 2, text="段落二", section_path="标题"),
     ]
 
-    chunks = chunk_blocks(blocks)
+    chunks = chunk_blocks(blocks, DEFAULT_CHUNKING_PARAMS)
 
     # 小文档聚合为单父单子：父保存完整上下文，子为召回单元
     assert len(chunks) == 2
@@ -88,7 +93,7 @@ def test_table_searchable_text_becomes_chunk_content():
         _stored(BlockType.TABLE, 1, section_path="表", table=table),
     ]
 
-    chunks = chunk_blocks(blocks)
+    chunks = chunk_blocks(blocks, DEFAULT_CHUNKING_PARAMS)
 
     child = chunks[-1]
     assert "表头甲 表头乙 数据甲 数据乙" in child.content
@@ -105,7 +110,7 @@ def test_section_runs_isolated_even_when_path_reappears():
         _stored(BlockType.HEADING, 3, text="复现甲", section_path="甲"),
     ]
 
-    chunks = chunk_blocks(blocks)
+    chunks = chunk_blocks(blocks, DEFAULT_CHUNKING_PARAMS)
 
     parents = [chunk for chunk in chunks if chunk.parent_ordinal is None]
     # 三个连续段各产生一个父切片
@@ -121,7 +126,7 @@ def test_budget_creates_multiple_parents_and_children():
         _stored(BlockType.PARAGRAPH, 1, text="段落", page_no=2),
     ]
 
-    chunks = chunk_blocks(blocks)
+    chunks = chunk_blocks(blocks, DEFAULT_CHUNKING_PARAMS)
 
     parents = [chunk for chunk in chunks if chunk.parent_ordinal is None]
     children = [chunk for chunk in chunks if chunk.parent_ordinal is not None]
@@ -143,16 +148,65 @@ def test_empty_and_whitespace_blocks_skipped():
         _stored(BlockType.PARAGRAPH, 1, text="   \n "),
     ]
 
-    assert chunk_blocks(blocks) == ()
-    assert chunk_blocks([]) == ()
+    assert chunk_blocks(blocks, DEFAULT_CHUNKING_PARAMS) == ()
+    assert chunk_blocks([], DEFAULT_CHUNKING_PARAMS) == ()
 
 
 def test_config_json_is_canonical_and_binds_parameters():
     """配置 JSON 确定性产出并绑定参数集（键排序、含版本常量）"""
-    first = chunking_config_json()
-    second = chunking_config_json()
+    first = chunking_config_json(DEFAULT_CHUNKING_PARAMS)
+    second = chunking_config_json(DEFAULT_CHUNKING_PARAMS)
 
     assert first == second
     assert '"chunking_config_version":"1"' in first
     assert f'"parent_chunk_chars":{PARENT_CHUNK_CHARS}' in first
     assert f'"child_chunk_chars":{CHILD_CHUNK_CHARS}' in first
+
+
+def test_custom_params_change_chunking_granularity():
+    """自定义预算改变切片粒度：小预算产生更多父切片"""
+    long_text_a = "甲" * 300
+    long_text_b = "乙" * 300
+    blocks = [
+        _stored(BlockType.PARAGRAPH, 0, text=long_text_a),
+        _stored(BlockType.PARAGRAPH, 1, text=long_text_b),
+    ]
+
+    default_chunks = chunk_blocks(blocks, DEFAULT_CHUNKING_PARAMS)
+    small_chunks = chunk_blocks(
+        blocks, validate_chunking_params(500, 200)
+    )
+
+    # 默认预算（1200）下两段合入单父；小预算（500）下各自成父
+    assert len([c for c in default_chunks if c.parent_ordinal is None]) == 1
+    assert len([c for c in small_chunks if c.parent_ordinal is None]) == 2
+
+
+def test_resolve_params_defaults_and_validates():
+    """参数解析：缺省即默认值，结构不变式非法输入拒绝"""
+    assert resolve_chunking_params(None) == DEFAULT_CHUNKING_PARAMS
+    assert resolve_chunking_params("  ") == DEFAULT_CHUNKING_PARAMS
+    assert resolve_chunking_params(
+        '{"child_chunk_chars":300,"parent_chunk_chars":800}'
+    ) == validate_chunking_params(800, 300)
+
+    with pytest.raises(ValueError):
+        resolve_chunking_params("不是 JSON")
+    # 非 JSON 文本直接改库才可能产生；读取端按类型错误暴露不掩盖
+    with pytest.raises(TypeError):
+        resolve_chunking_params('["parent_chunk_chars", 800]')
+    with pytest.raises(ValueError):
+        resolve_chunking_params('{"parent_chunk_chars":800}')
+    with pytest.raises(ValueError):
+        resolve_chunking_params(
+            '{"parent_chunk_chars":0,"child_chunk_chars":0}'
+        )
+    with pytest.raises(ValueError):
+        resolve_chunking_params(
+            '{"parent_chunk_chars":400,"child_chunk_chars":800}'
+        )
+    # bool 在 JSON 解析后是 int 子类，须拒绝
+    with pytest.raises(ValueError):
+        resolve_chunking_params(
+            '{"parent_chunk_chars":true,"child_chunk_chars":true}'
+        )

@@ -8,6 +8,7 @@ import json
 import time
 from datetime import datetime, timedelta, timezone
 
+from app.domain.chunking import CHUNKING_OVERRIDE_SETTING_KEY
 from app.domain.errors import EmbeddingTransientError
 from app.domain.ids import uuid7
 
@@ -185,7 +186,9 @@ def test_rebuild_task_rebuilds_and_switches(env):
 
 def test_rebuild_failure_keeps_old_active_intact(env):
     """重建失败：任务转入重试等待，旧活动索引完好无损"""
-    task_id = _import_file(env, "笔记.txt", "失败保护内容\n\n第二段内容".encode())
+    # 段落长度足以让参数变化改变切片聚合（缓存未命中是失败前提）
+    long_text = "失败保护内容" * 60 + "\n\n" + "第二段内容" * 60
+    task_id = _import_file(env, "笔记.txt", long_text.encode())
     worker = env.build()
     assert worker.process_next() is True
     assert worker.process_next() is True  # 附带的清理任务
@@ -194,6 +197,11 @@ def test_rebuild_failure_keeps_old_active_intact(env):
     old_index = env.repos["indexes"].list_by_document_version(version_id)[0]
     vectors_before = env.vector_index.count_vectors(old_index.vector_collection)
 
+    # 改变切片参数使重建产生新切片（缓存未命中），嵌入失败才会发生
+    env.repos["settings"].put(
+        CHUNKING_OVERRIDE_SETTING_KEY,
+        '{"child_chunk_chars":200,"parent_chunk_chars":500}',
+    )
     rebuild = env.repos["tasks"].create(
         "rebuild_index", document_version_id=version_id
     )

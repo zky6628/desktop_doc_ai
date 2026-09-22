@@ -16,10 +16,18 @@ from typing import Protocol
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from app.domain import file_policy, task_state
+from app.domain.chunking import (
+    CHUNKING_OVERRIDE_SETTING_KEY,
+    resolve_chunking_params,
+    validate_chunking_params,
+)
 from app.domain.embedding import EMBEDDING_MODEL
 from app.domain.generation import GENERATION_MODEL
+from app.domain.parsing import canonical_json
+from app.domain.ports import SystemSettingsRepository
 from app.domain.rerank import RERANK_MODEL
 
 from .envelope import error_envelope, new_request_id, success_envelope
@@ -66,6 +74,14 @@ class OpsDependencies:
     mineru_configured: bool
     dashscope_configured: bool
     local_debug_enabled: bool
+    settings_repo: SystemSettingsRepository
+
+
+class ChunkingConfigBody(BaseModel):
+    """切片参数写入请求体"""
+
+    parent_chunk_chars: int
+    child_chunk_chars: int
 
 
 def create_ops_router(deps: OpsDependencies) -> APIRouter:
@@ -187,6 +203,52 @@ def create_ops_router(deps: OpsDependencies) -> APIRouter:
                 "local_debug_enabled": deps.local_debug_enabled,
                 "cloud_parsing_available": deps.mineru_configured,
             },
+        }
+        return JSONResponse(
+            status_code=200, content=success_envelope(payload, request_id)
+        )
+
+    @router.get("/config/chunking")
+    def get_chunking_config() -> JSONResponse:
+        """在役切片参数：当前生效值与是否为默认预算"""
+        request_id = new_request_id()
+        raw = deps.settings_repo.get(CHUNKING_OVERRIDE_SETTING_KEY)
+        params = resolve_chunking_params(raw)
+        payload = {
+            "parent_chunk_chars": params.parent_chunk_chars,
+            "child_chunk_chars": params.child_chunk_chars,
+            "is_default": raw is None or not raw.strip(),
+        }
+        return JSONResponse(
+            status_code=200, content=success_envelope(payload, request_id)
+        )
+
+    @router.put("/config/chunking")
+    def put_chunking_config(body: ChunkingConfigBody) -> JSONResponse:
+        """写入在役切片参数（覆盖式，写入即对后续导入/重建生效）"""
+        request_id = new_request_id()
+        try:
+            params = validate_chunking_params(
+                body.parent_chunk_chars, body.child_chunk_chars
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=422,
+                content=error_envelope(request_id, "INVALID_PARAM", str(exc)),
+            )
+        deps.settings_repo.put(
+            CHUNKING_OVERRIDE_SETTING_KEY,
+            canonical_json(
+                {
+                    "parent_chunk_chars": params.parent_chunk_chars,
+                    "child_chunk_chars": params.child_chunk_chars,
+                }
+            ),
+        )
+        payload = {
+            "parent_chunk_chars": params.parent_chunk_chars,
+            "child_chunk_chars": params.child_chunk_chars,
+            "is_default": False,
         }
         return JSONResponse(
             status_code=200, content=success_envelope(payload, request_id)

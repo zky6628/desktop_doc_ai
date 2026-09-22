@@ -15,7 +15,11 @@ from datetime import datetime, timedelta, timezone
 
 from docx import Document as DocxDocument
 
-from app.domain.chunking import chunk_blocks
+from app.domain.chunking import (
+    CHUNKING_OVERRIDE_SETTING_KEY,
+    DEFAULT_CHUNKING_PARAMS,
+    chunk_blocks,
+)
 from app.domain.entities import TaskStage, TaskStatus
 from app.domain.errors import CloudTransportError, EmbeddingTransientError
 from app.infrastructure.mineru.archive import extract_archive
@@ -149,6 +153,54 @@ def test_local_txt_processed_to_succeeded(env):
     # 索引激活后文档级指针回填并置 ready
     document = env.repos["documents"].get(task.document_id)
     assert document.status.value == "ready"
+
+
+def test_rebuild_after_param_roundtrip_hits_embedding_cache(env):
+    """参数往返后重建：回到原参数时切片与首次一致，嵌入缓存全命中零 API 调用"""
+    task_id = _import_file(env, "缓存.txt", "缓存命中验证第一段\n\n缓存命中验证第二段".encode())
+    worker = env.build()
+    assert worker.process_next() is True
+    task = env.repos["tasks"].get(task_id)
+    assert task.state.value == "succeeded"
+    version_id = task.document_version_id
+
+    # 参数改为小预算并重建：切片内容变化，嵌入必须重新调用
+    env.repos["settings"].put(
+        CHUNKING_OVERRIDE_SETTING_KEY,
+        '{"child_chunk_chars":200,"parent_chunk_chars":500}',
+    )
+    rebuild_small = env.repos["tasks"].create(
+        "rebuild_index",
+        document_id=task.document_id,
+        document_version_id=version_id,
+    )
+    # 清扫任务可能与重建并存，循环处理直到重建离开队列
+    while env.repos["tasks"].get(rebuild_small.id).state.value == "queued":
+        assert worker.process_next() is True
+    assert env.repos["tasks"].get(rebuild_small.id).state.value == "succeeded"
+    small_budget_calls = len(env.gateway.embedded_texts)
+    assert small_budget_calls > 0
+
+    # 改回默认参数重建：切片与首次完全一致（同哈希），嵌入零调用
+    env.repos["settings"].put(
+        CHUNKING_OVERRIDE_SETTING_KEY,
+        '{"child_chunk_chars":400,"parent_chunk_chars":1200}',
+    )
+    fresh_gateway = FakeEmbeddingGateway()
+    fresh_worker = env.build(embedding_gateway=fresh_gateway)
+    rebuild_default = env.repos["tasks"].create(
+        "rebuild_index",
+        document_id=task.document_id,
+        document_version_id=version_id,
+    )
+    while env.repos["tasks"].get(rebuild_default.id).state.value == "queued":
+        assert fresh_worker.process_next() is True
+    assert env.repos["tasks"].get(rebuild_default.id).state.value == "succeeded"
+    assert fresh_gateway.embedded_texts == []
+
+    # 重建后的活动索引验证通过（向量数量与切片事实一致）
+    active_id = env.repos["versions"].get(version_id).active_index_version_id
+    assert active_id is not None
 
 
 def test_local_docx_table_evidence_persisted(env):
@@ -359,7 +411,8 @@ def test_embedding_resume_continues_from_cursor(env):
     env.repos["chunks"].replace_index_chunks(
         index_version.id,
         chunk_blocks(
-            env.repos["content"].list_document_blocks(claimed.document_version_id)
+            env.repos["content"].list_document_blocks(claimed.document_version_id),
+            DEFAULT_CHUNKING_PARAMS,
         ),
     )
     stored_chunks = env.repos["chunks"].list_index_chunks(index_version.id)
@@ -462,7 +515,8 @@ def test_validation_mismatch_fails_without_activation(env):
     env.repos["chunks"].replace_index_chunks(
         index_version.id,
         chunk_blocks(
-            env.repos["content"].list_document_blocks(claimed.document_version_id)
+            env.repos["content"].list_document_blocks(claimed.document_version_id),
+            DEFAULT_CHUNKING_PARAMS,
         ),
     )
     env.vector_index.upsert_vectors(

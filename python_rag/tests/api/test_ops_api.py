@@ -12,7 +12,10 @@ from fastapi.testclient import TestClient
 from app.api.v1 import ApiV1Dependencies, OpsDependencies, create_api_router
 from app.domain import file_policy, task_state
 from app.infrastructure.sqlite.connection import connect
-from app.infrastructure.sqlite.repositories import SQLiteConfigRepository
+from app.infrastructure.sqlite.repositories import (
+    SQLiteConfigRepository,
+    SQLiteSystemSettingsRepository,
+)
 from tests.infrastructure.schema_helpers import fresh_db, insert_task
 
 
@@ -55,6 +58,7 @@ def build_client(
                     mineru_configured=mineru,
                     dashscope_configured=dashscope,
                     local_debug_enabled=local_debug,
+                    settings_repo=SQLiteSystemSettingsRepository(conn),
                 ),
             )
         )
@@ -223,3 +227,74 @@ class TestPublicConfig:
         assert "api_key" not in text
         assert "MINERU_API_TOKEN" not in text
         assert "DASHSCOPE_API_KEY" not in text
+
+
+class TestChunkingConfig:
+    def test_get_returns_default_when_unset(self, env):
+        client = build_client(env)
+
+        response = client.get("/api/v1/config/chunking")
+
+        assert response.status_code == 200
+        assert response.json()["data"] == {
+            "parent_chunk_chars": 1200,
+            "child_chunk_chars": 400,
+            "is_default": True,
+        }
+
+    def test_put_writes_override_and_get_reflects_it(self, env):
+        client = build_client(env)
+
+        written = client.put(
+            "/api/v1/config/chunking",
+            json={"parent_chunk_chars": 800, "child_chunk_chars": 300},
+        )
+
+        assert written.status_code == 200
+        assert written.json()["data"] == {
+            "parent_chunk_chars": 800,
+            "child_chunk_chars": 300,
+            "is_default": False,
+        }
+        assert client.get("/api/v1/config/chunking").json()["data"] == {
+            "parent_chunk_chars": 800,
+            "child_chunk_chars": 300,
+            "is_default": False,
+        }
+
+    def test_put_rejects_child_exceeding_parent(self, env):
+        client = build_client(env)
+
+        response = client.put(
+            "/api/v1/config/chunking",
+            json={"parent_chunk_chars": 400, "child_chunk_chars": 800},
+        )
+
+        assert response.status_code == 422
+        body = response.json()
+        assert body["success"] is False
+        assert body["error"]["code"] == "INVALID_PARAM"
+        # 非法写入不落库：读取仍为默认值
+        assert client.get("/api/v1/config/chunking").json()["data"]["is_default"] is True
+
+    def test_put_rejects_non_positive_values(self, env):
+        client = build_client(env)
+
+        response = client.put(
+            "/api/v1/config/chunking",
+            json={"parent_chunk_chars": 0, "child_chunk_chars": 0},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "INVALID_PARAM"
+
+    def test_put_rejects_non_integer_fields(self, env):
+        client = build_client(env)
+
+        response = client.put(
+            "/api/v1/config/chunking",
+            json={"parent_chunk_chars": "八百", "child_chunk_chars": 300},
+        )
+
+        # pydantic 类型守卫先于业务校验拒绝字符串
+        assert response.status_code == 422

@@ -71,7 +71,7 @@ def test_migration_applies_full_set_including_conversations(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        assert applied == 9
+        assert applied == 12
         assert {"conversations", "messages", "citations"} <= tables
     finally:
         connection.close()

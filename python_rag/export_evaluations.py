@@ -26,6 +26,8 @@ def _export_rows(conn: sqlite3.Connection):
         " output_tokens, error_code, created_at"
         " FROM query_runs ORDER BY created_at, id"
     ).fetchall()
+    # 切片参数配置缓存：配置行内容在运行间大量重复，按配置 ID 去重读取
+    chunking_config_cache: dict[str, dict | None] = {}
     for run in runs:
         candidates = conn.execute(
             "SELECT chunk_id, source, vector_rank, vector_score, keyword_rank,"
@@ -57,6 +59,9 @@ def _export_rows(conn: sqlite3.Connection):
             "output_tokens": run[13],
             "error_code": run[14],
             "created_at": run[15],
+            "chunking_config": _chunking_config_for_run(
+                conn, run[0], chunking_config_cache
+            ),
             "candidates": [
                 {
                     "chunk_id": c[0],
@@ -86,6 +91,31 @@ def _export_rows(conn: sqlite3.Connection):
                 for c in citations
             ],
         }
+
+
+def _chunking_config_for_run(
+    conn: sqlite3.Connection, run_id: str, cache: dict[str, dict | None]
+) -> dict | None:
+    """读取查询运行候选归属索引版本的切片参数（对比报告自描述）
+
+    候选经切片主键回查索引版本与配置行；运行无候选或配置行缺失
+    时返回 None（指标事实不受影响，参数缺失仅无法参与参数对比）
+    """
+    row = conn.execute(
+        "SELECT iv.chunking_config_id, pc.config_json"
+        " FROM retrieval_candidates rc"
+        " JOIN chunks ch ON ch.id = rc.chunk_id"
+        " JOIN index_versions iv ON iv.id = ch.index_version_id"
+        " LEFT JOIN pipeline_configs pc ON pc.id = iv.chunking_config_id"
+        " WHERE rc.query_run_id = ? LIMIT 1",
+        (run_id,),
+    ).fetchone()
+    if row is None or row[1] is None:
+        return None
+    config_id = row[0]
+    if config_id not in cache:
+        cache[config_id] = json.loads(row[1])
+    return cache[config_id]
 
 
 def main(argv: list[str] | None = None) -> int:

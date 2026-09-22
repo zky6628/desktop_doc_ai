@@ -9,7 +9,11 @@ from types import SimpleNamespace
 import chromadb
 import pytest
 
-from app.domain.chunking import chunk_blocks, integrity_hash
+from app.domain.chunking import (
+    DEFAULT_CHUNKING_PARAMS,
+    chunk_blocks,
+    integrity_hash,
+)
 from app.domain.ids import uuid7
 from app.domain.index_maintenance import (
     ISSUE_CHUNK_COUNT_MISMATCH,
@@ -117,7 +121,10 @@ def _build_index(
         embedding_profile_id=embed_config_id,
         keyword_config_id=keyword_config_id,
     )
-    chunks = chunk_blocks(env.repos["content"].list_document_blocks(version_id))
+    chunks = chunk_blocks(
+        env.repos["content"].list_document_blocks(version_id),
+        DEFAULT_CHUNKING_PARAMS,
+    )
     env.repos["chunks"].replace_index_chunks(index.id, chunks)
     stored = env.repos["chunks"].list_index_chunks(index.id)
     children = [s for s in stored if s.chunk.parent_ordinal is not None]

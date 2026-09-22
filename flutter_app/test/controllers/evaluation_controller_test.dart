@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 
 import 'package:desktop_document_ai/api/knowledge_api_client.dart';
 import 'package:desktop_document_ai/api/ops_api_client.dart';
+import 'package:desktop_document_ai/api/dto/ops_dto.dart';
 import 'package:desktop_document_ai/api/query_api_client.dart';
 import 'package:desktop_document_ai/app/server_address.dart';
 import 'package:desktop_document_ai/controllers/evaluation_controller.dart';
@@ -53,6 +54,42 @@ Map<String, dynamic> kbPayload() => {
         },
       ],
       'next_cursor': null,
+    };
+
+Map<String, dynamic> evaluationRunPayload({required String state}) => {
+      'id': 'run-1',
+      'knowledge_base_id': 'kb-1',
+      'task_id': 'task-1',
+      'state': state,
+      'target_version_ids': ['v-1'],
+      'questions': ['问题一'],
+      'param_groups': [
+        {'parent_chunk_chars': 800, 'child_chunk_chars': 300},
+      ],
+      'current_group_index': state == 'running' ? 0 : 1,
+      'current_question_index': state == 'running' ? 0 : 1,
+      'results': [
+        if (state == 'completed')
+          {
+            'group': {'parent_chunk_chars': 800, 'child_chunk_chars': 300},
+            'query_run_ids': ['qr-1'],
+            'metrics': {
+              'total': 1,
+              'completed': 1,
+              'failed': 0,
+              'cancelled': 0,
+              'refused': 0,
+              'rerank_degraded': 0,
+              'ttft_p50_ms': 700,
+              'ttft_p95_ms': 700,
+              'input_tokens': 100,
+              'output_tokens': 20,
+            },
+          },
+      ],
+      'error_code': null,
+      'created_at': '2026-09-22T00:00:00+00:00',
+      'updated_at': '2026-09-22T00:00:00+00:00',
     };
 
 EvaluationController controllerWith(
@@ -274,6 +311,114 @@ void main() {
     expect(controller.debugResult!.candidates.single.fileName, '手册.pdf');
     expect(controller.debugResult!.stages.rerankDegraded, isTrue);
     expect(controller.debugResult!.overridden, {'fused_top_k': 5});
+  });
+
+  test('loadInitial 读取在役切片参数', () async {
+    final controller = controllerWith((request) async {
+      if (request.url.path == '/api/v1/config/chunking') {
+        return envelope({
+          'parent_chunk_chars': 800,
+          'child_chunk_chars': 300,
+          'is_default': false,
+        });
+      }
+      if (request.url.path == '/api/v1/metrics/queries') {
+        return envelope(metricsPayload(total: 1));
+      }
+      return envelope(kbPayload());
+    });
+
+    await controller.loadInitial();
+
+    expect(controller.chunkingConfig!.parentChunkChars, 800);
+    expect(controller.chunkingConfig!.childChunkChars, 300);
+    expect(controller.chunkingConfig!.isDefault, isFalse);
+  });
+
+  test('saveChunkingParams 发送 PUT 并更新本地快照', () async {
+    final bodies = <Map<String, dynamic>>[];
+    final controller = controllerWith((request) async {
+      if (request.url.path == '/api/v1/config/chunking') {
+        if (request.method == 'PUT') {
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        }
+        return envelope({
+          'parent_chunk_chars': 1600,
+          'child_chunk_chars': 400,
+          'is_default': false,
+        });
+      }
+      return envelope(kbPayload());
+    });
+
+    await controller.saveChunkingParams(parentChunkChars: 1600, childChunkChars: 400);
+
+    expect(bodies.single['parent_chunk_chars'], 1600);
+    expect(bodies.single['child_chunk_chars'], 400);
+    expect(controller.chunkingConfig!.parentChunkChars, 1600);
+    expect(controller.chunkingError, isNull);
+    expect(controller.chunkingSaving, isFalse);
+  });
+
+  test('startEvaluationRun 创建运行并解析对比结果', () async {
+    final bodies = <Map<String, dynamic>>[];
+    final controller = controllerWith((request) async {
+      if (request.url.path == '/api/v1/evaluation-runs') {
+        if (request.method == 'POST') {
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+        }
+        return envelope(evaluationRunPayload(state: 'running'));
+      }
+      return envelope(kbPayload());
+    });
+    await controller.setKbFilter('kb-1');
+
+    await controller.startEvaluationRun(
+      questions: ['问题一'],
+      paramGroups: const [
+        ChunkingParams(parentChunkChars: 800, childChunkChars: 300),
+      ],
+    );
+
+    expect(bodies.single['knowledge_base_id'], 'kb-1');
+    expect(bodies.single['questions'], ['问题一']);
+    expect(bodies.single['param_groups'], [
+      {'parent_chunk_chars': 800, 'child_chunk_chars': 300},
+    ]);
+    expect(controller.evaluationRun!.state, 'running');
+    expect(controller.evaluationError, isNull);
+  });
+
+  test('评测运行轮询至终态后停止', () async {
+    var pollCalls = 0;
+    final controller = controllerWith((request) async {
+      if (request.url.path == '/api/v1/evaluation-runs/run-1') {
+        pollCalls += 1;
+        return envelope(
+          evaluationRunPayload(state: pollCalls >= 2 ? 'completed' : 'running'),
+        );
+      }
+      if (request.url.path == '/api/v1/evaluation-runs' &&
+          request.method == 'POST') {
+        return envelope(evaluationRunPayload(state: 'running'));
+      }
+      return envelope(kbPayload());
+    });
+    await controller.setKbFilter('kb-1');
+    await controller.startEvaluationRun(
+      questions: ['问题一'],
+      paramGroups: const [
+        ChunkingParams(parentChunkChars: 800, childChunkChars: 300),
+      ],
+    );
+
+    // 轮询周期 2s：推进两个周期触发两次轮询，第二次到达终态
+    await Future<void>.delayed(const Duration(milliseconds: 2100));
+    await Future<void>.delayed(const Duration(milliseconds: 2100));
+
+    expect(controller.evaluationRun!.state, 'completed');
+    expect(controller.evaluationRun!.results, isNotEmpty);
+    expect(pollCalls, greaterThanOrEqualTo(2));
   });
 
   test('未选定知识库或空白问题不发起调试检索', () async {

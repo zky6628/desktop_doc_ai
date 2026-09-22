@@ -9,6 +9,7 @@
 按序号 upsert 语义承担，哈希只表达内容事实。
 """
 import hashlib
+import json
 from dataclasses import dataclass
 
 from app.domain.parsing import Block, BlockType, canonical_json
@@ -20,11 +21,11 @@ CHUNKING_CONFIG_VERSION = "1"
 # 配置类型取值：与流水线配置表的 config_type 口径一致
 CHUNKING_CONFIG_TYPE = "chunking"
 
-# 父切片字符预算：组内素材累计超过该值即开新父切片（单素材超预算
-# 时独占切片，不硬切以保持解析块完整）
+# 父切片字符预算默认值：组内素材累计超过该值即开新父切片（单素材
+# 超预算时独占切片，不硬切以保持解析块完整）
 PARENT_CHUNK_CHARS = 1200
 
-# 子切片字符预算：父切片内的再切分粒度（直接召回单元）
+# 子切片字符预算默认值：父切片内的再切分粒度（直接召回单元）
 CHILD_CHUNK_CHARS = 400
 
 # 素材文本拼接分隔符：段落语义的确定性连接
@@ -33,17 +34,78 @@ CHUNK_CONTENT_SEPARATOR = "\n\n"
 # 定位关系类型：切片由其链接的解析块原文构成（引用定位链的起点）
 CHUNK_BLOCK_RELATION_EXACT = "exact"
 
+# 系统设置键：切片参数覆盖（缺省即默认预算）
+CHUNKING_OVERRIDE_SETTING_KEY = "chunking_override"
 
-def chunking_config_json() -> str:
-    """产出当前切片参数集的规范 JSON（配置行的内容与哈希来源）
+
+@dataclass(frozen=True)
+class ChunkingParams:
+    """切片参数：父/子切片字符预算（在役值由系统设置解析）"""
+
+    parent_chunk_chars: int
+    child_chunk_chars: int
+
+
+DEFAULT_CHUNKING_PARAMS = ChunkingParams(
+    parent_chunk_chars=PARENT_CHUNK_CHARS,
+    child_chunk_chars=CHILD_CHUNK_CHARS,
+)
+
+
+def validate_chunking_params(parent: object, child: object) -> ChunkingParams:
+    """校验并构造切片参数
+
+    入参按未信任值处理（可来自 JSON 反序列化），运行时完整校验。
+    结构不变式：正整数、子不超父；违反即拒绝而非静默调整——参数
+    错误应在写入端暴露，不该在切片端被掩盖
+
+    :raises ValueError: 不变式不满足
+    """
+    # JSON 反序列化后的类型不符按参数值错误统一以 ValueError 表达
+    # （调用方单一错误族处理，不区分异常类型）
+    if not isinstance(parent, int) or isinstance(parent, bool):
+        raise ValueError("parent_chunk_chars 必须为正整数")  # noqa: TRY004
+    if not isinstance(child, int) or isinstance(child, bool):
+        raise ValueError("child_chunk_chars 必须为正整数")  # noqa: TRY004
+    if parent < 1 or child < 1:
+        raise ValueError("parent_chunk_chars 与 child_chunk_chars 必须为正整数")
+    if child > parent:
+        raise ValueError("child_chunk_chars 不能大于 parent_chunk_chars")
+    return ChunkingParams(parent_chunk_chars=parent, child_chunk_chars=child)
+
+
+def resolve_chunking_params(value_json: str | None) -> ChunkingParams:
+    """从系统设置 JSON 解析切片参数
+
+    缺省（None/空白）即默认预算；值必须为含 parent/child 的对象且
+    满足结构不变式，非法输入拒绝
+
+    :raises ValueError: JSON 非法、字段缺失或不变式不满足
+    """
+    if value_json is None or not value_json.strip():
+        return DEFAULT_CHUNKING_PARAMS
+    try:
+        content = json.loads(value_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"切片参数 JSON 非法: {exc}") from exc
+    if not isinstance(content, dict):
+        raise TypeError("切片参数必须是对象")
+    return validate_chunking_params(
+        content.get("parent_chunk_chars"),
+        content.get("child_chunk_chars"),
+    )
+
+
+def chunking_config_json(params: ChunkingParams) -> str:
+    """产出切片参数集的规范 JSON（配置行的内容与哈希来源）
 
     :return: 键排序、紧凑分隔的配置 JSON 文本
     """
     return canonical_json(
         {
             "chunking_config_version": CHUNKING_CONFIG_VERSION,
-            "parent_chunk_chars": PARENT_CHUNK_CHARS,
-            "child_chunk_chars": CHILD_CHUNK_CHARS,
+            "parent_chunk_chars": params.parent_chunk_chars,
+            "child_chunk_chars": params.child_chunk_chars,
             "content_separator": CHUNK_CONTENT_SEPARATOR,
         }
     )
@@ -219,15 +281,18 @@ def _build_chunk(
     )
 
 
-def chunk_blocks(blocks: list[StoredBlock]) -> tuple[Chunk, ...]:
+def chunk_blocks(
+    blocks: list[StoredBlock], params: ChunkingParams
+) -> tuple[Chunk, ...]:
     """把已落库解析块序列转换为父子切片结构
 
     转换规则：素材按章节路径的连续段分组（父切片不跨章节路径，同
     路径中断后重现视为新段）；段内按父预算聚合父切片；父内素材按
     子预算聚合子切片。切片序号父子共用连续计数，父先于其子，子
-    切片引用父序号。
+    切片引用父序号。相同块序列与相同参数必然得到逐字段一致的结果。
 
     :param blocks: 已落库解析块（按序号升序）
+    :param params: 切片参数（父/子字符预算）
     :return: 父先子后的切片序列（序号 0 起连续）
     """
     chunks: list[Chunk] = []
@@ -240,13 +305,13 @@ def chunk_blocks(blocks: list[StoredBlock]) -> tuple[Chunk, ...]:
             runs.append((section_path, [unit]))
 
     for section_path, run_units in runs:
-        for parent_units in _aggregate(run_units, PARENT_CHUNK_CHARS):
+        for parent_units in _aggregate(run_units, params.parent_chunk_chars):
             parent_ordinal = ordinal
             chunks.append(
                 _build_chunk(ordinal, None, section_path, parent_units)
             )
             ordinal += 1
-            for child_units in _aggregate(parent_units, CHILD_CHUNK_CHARS):
+            for child_units in _aggregate(parent_units, params.child_chunk_chars):
                 chunks.append(
                     _build_chunk(ordinal, parent_ordinal, section_path, child_units)
                 )

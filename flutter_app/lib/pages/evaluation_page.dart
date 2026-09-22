@@ -143,34 +143,57 @@ class _EvaluationPageState extends State<EvaluationPage> {
     final debugCard = controller.debugAvailable == true
         ? _DebugSearchCard(controller: controller)
         : null;
+    // 切片参数与评测运行为常驻区域（调参是评测行为的一部分）
+    final chunkingCard = _ChunkingCard(controller: controller);
+    final evaluationCard = _EvaluationRunCard(controller: controller);
     if (metrics == null) return const SizedBox.shrink();
     if (metrics.total == 0) {
       return ListView(
         padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
         children: [
+          chunkingCard,
+          const SizedBox(height: 16),
+          evaluationCard,
+          const SizedBox(height: 16),
           if (debugCard != null) ...[debugCard, const SizedBox(height: 16)],
           SizedBox(height: 420, child: _EmptyView()),
         ],
       );
     }
-    return _MetricsView(metrics: metrics, debugCard: debugCard);
+    return _MetricsView(
+      metrics: metrics,
+      debugCard: debugCard,
+      chunkingCard: chunkingCard,
+      evaluationCard: evaluationCard,
+    );
   }
 }
 
 /// 概览/分位/用量三组指标卡（Wrap 布局适配窄窗口换行）
 class _MetricsView extends StatelessWidget {
-  const _MetricsView({required this.metrics, this.debugCard});
+  const _MetricsView({
+    required this.metrics,
+    this.debugCard,
+    this.chunkingCard,
+    this.evaluationCard,
+  });
 
   final QueryMetricsSummary metrics;
 
   /// 调试检索卡片（开关开启时由页面传入，置于指标卡之前）
   final Widget? debugCard;
 
+  /// 切片参数与评测运行卡片（常驻区域，置于页面顶部）
+  final Widget? chunkingCard;
+  final Widget? evaluationCard;
+
   @override
   Widget build(BuildContext context) {
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
       children: [
+        if (chunkingCard != null) ...[chunkingCard!, const SizedBox(height: 16)],
+        if (evaluationCard != null) ...[evaluationCard!, const SizedBox(height: 16)],
         if (debugCard != null) ...[debugCard!, const SizedBox(height: 16)],
         Card(
           child: Padding(
@@ -657,4 +680,453 @@ class _DebugResultView extends StatelessWidget {
 
   String _score(num? score) =>
       score == null ? '—' : score.toStringAsFixed(4);
+}
+
+/// 在役切片参数卡片：读取当前生效值并支持覆盖保存（写入即对后续导入/重建生效）
+class _ChunkingCard extends StatefulWidget {
+  const _ChunkingCard({required this.controller});
+
+  final EvaluationController controller;
+
+  @override
+  State<_ChunkingCard> createState() => _ChunkingCardState();
+}
+
+class _ChunkingCardState extends State<_ChunkingCard> {
+  final _parentField = TextEditingController();
+  final _childField = TextEditingController();
+  bool _initialized = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_syncFromServer);
+  }
+
+  void _syncFromServer() {
+    final config = widget.controller.chunkingConfig;
+    if (config == null || _initialized) return;
+    _initialized = true;
+    _parentField.text = '${config.parentChunkChars}';
+    _childField.text = '${config.childChunkChars}';
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_syncFromServer);
+    _parentField.dispose();
+    _childField.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    final parent = int.tryParse(_parentField.text.trim());
+    final child = int.tryParse(_childField.text.trim());
+    if (parent == null || child == null) return;
+    unawaited(
+      widget.controller.saveChunkingParams(
+        parentChunkChars: parent,
+        childChunkChars: child,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final config = controller.chunkingConfig;
+    final colors = Theme.of(context).colorScheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.content_cut, size: 18),
+                const SizedBox(width: 8),
+                const Text(
+                  '切片参数',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(width: 8),
+                if (config != null && config.isDefault)
+                  Text(
+                    '当前为默认值',
+                    style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '写入即对后续导入与索引重建生效；参数变化将产生新配置版本与索引版本',
+              style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                SizedBox(
+                  width: 140,
+                  child: TextField(
+                    controller: _parentField,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '父切片预算',
+                      hintText: '1200',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                SizedBox(
+                  width: 140,
+                  child: TextField(
+                    controller: _childField,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: '子切片预算',
+                      hintText: '400',
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ),
+                const Spacer(),
+                FilledButton.tonal(
+                  onPressed: controller.chunkingSaving ? null : _save,
+                  child: Text(controller.chunkingSaving ? '保存中' : '保存'),
+                ),
+              ],
+            ),
+            if (controller.chunkingError != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                '${controller.chunkingError!.message}（${controller.chunkingError!.code}）',
+                style: TextStyle(fontSize: 12, color: colors.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 切片参数对比评测卡片：参数组编辑、问题集输入、进度与对比结果
+class _EvaluationRunCard extends StatefulWidget {
+  const _EvaluationRunCard({required this.controller});
+
+  final EvaluationController controller;
+
+  @override
+  State<_EvaluationRunCard> createState() => _EvaluationRunCardState();
+}
+
+class _EvaluationRunCardState extends State<_EvaluationRunCard> {
+  /// 参数组编辑行：parent/child 文本控制器对
+  final List<(TextEditingController, TextEditingController)> _groupFields = [
+    (TextEditingController(text: '800'), TextEditingController(text: '300')),
+    (TextEditingController(text: '1200'), TextEditingController(text: '400')),
+    (TextEditingController(text: '1600'), TextEditingController(text: '400')),
+  ];
+  final _questionsField = TextEditingController();
+
+  @override
+  void dispose() {
+    for (final (parent, child) in _groupFields) {
+      parent.dispose();
+      child.dispose();
+    }
+    _questionsField.dispose();
+    super.dispose();
+  }
+
+  void _addGroup() {
+    if (_groupFields.length >= 5) return;
+    setState(() {
+      _groupFields.add((
+        TextEditingController(text: '1200'),
+        TextEditingController(text: '400'),
+      ));
+    });
+  }
+
+  void _removeGroup(int index) {
+    setState(() {
+      final removed = _groupFields.removeAt(index);
+      removed.$1.dispose();
+      removed.$2.dispose();
+    });
+  }
+
+  void _start() {
+    final questions = [
+      for (final line in _questionsField.value.text.split('\n'))
+        if (line.trim().isNotEmpty) line.trim(),
+    ];
+    final groups = <ChunkingParams>[];
+    for (final (parent, child) in _groupFields) {
+      final parentValue = int.tryParse(parent.text.trim());
+      final childValue = int.tryParse(child.text.trim());
+      if (parentValue != null && childValue != null) {
+        groups.add(
+          ChunkingParams(
+            parentChunkChars: parentValue,
+            childChunkChars: childValue,
+          ),
+        );
+      }
+    }
+    if (questions.isEmpty || groups.isEmpty) return;
+    unawaited(
+      widget.controller.startEvaluationRun(
+        questions: questions,
+        paramGroups: groups,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = widget.controller;
+    final colors = Theme.of(context).colorScheme;
+    final run = controller.evaluationRun;
+    final running = run?.isRunning == true;
+    final kbSelected = controller.kbFilter != null;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.science, size: 18),
+                const SizedBox(width: 8),
+                const Text(
+                  '切片参数评测',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(width: 8),
+                if (!kbSelected)
+                  Text(
+                    '请先在上方选择具体知识库',
+                    style: TextStyle(fontSize: 12, color: colors.tertiary),
+                  ),
+                const Spacer(),
+                if (running)
+                  FilledButton.tonalIcon(
+                    onPressed: () =>
+                        unawaited(controller.cancelEvaluationRun()),
+                    icon: const Icon(Icons.cancel_outlined, size: 16),
+                    label: const Text('取消'),
+                  )
+                else
+                  FilledButton.icon(
+                    onPressed:
+                        (kbSelected && !controller.evaluationSubmitting)
+                            ? _start
+                            : null,
+                    icon: controller.evaluationSubmitting
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.play_arrow, size: 16),
+                    label: const Text('开始评测'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '每组参数将重建所选知识库索引后跑一遍问题集（每组产生一次全量嵌入调用）；'
+              '评测结束后自动恢复原参数并重建',
+              style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+            ),
+            const SizedBox(height: 12),
+            ..._buildGroupEditors(colors, running),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _questionsField,
+              enabled: !running,
+              minLines: 3,
+              maxLines: 6,
+              decoration: const InputDecoration(
+                labelText: '问题集（每行一个问题，最多 200 行）',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+            if (controller.evaluationError != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                '${controller.evaluationError!.message}（${controller.evaluationError!.code}）',
+                style: TextStyle(fontSize: 12, color: colors.error),
+              ),
+            ],
+            if (run != null) ...[
+              const SizedBox(height: 12),
+              _RunProgress(run: run),
+            ],
+            if (run != null && run.results != null && run.results!.isNotEmpty)
+              _ComparisonTable(results: run.results!),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildGroupEditors(ColorScheme colors, bool running) {
+    return [
+      for (var index = 0; index < _groupFields.length; index++) ...[
+        Row(
+          children: [
+            Text('组 ${index + 1}', style: const TextStyle(fontSize: 12)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: _groupFields[index].$1,
+                enabled: !running,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: '父预算',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                controller: _groupFields[index].$2,
+                enabled: !running,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: '子预算',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: '删除该组',
+              onPressed:
+                  running || _groupFields.length <= 1
+                      ? null
+                      : () => _removeGroup(index),
+              icon: const Icon(Icons.remove_circle_outline, size: 18),
+            ),
+          ],
+        ),
+        if (index == _groupFields.length - 1)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed:
+                  running || _groupFields.length >= 5 ? null : _addGroup,
+              icon: const Icon(Icons.add, size: 16),
+              label: const Text('添加参数组（最多 5 组）'),
+            ),
+          ),
+      ],
+    ];
+  }
+}
+
+/// 评测运行进度行（组/问题指针与终态徽标）
+class _RunProgress extends StatelessWidget {
+  const _RunProgress({required this.run});
+
+  final EvaluationRun run;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final (label, color) = switch (run.state) {
+      'running' => (
+        '进行中：第 ${((run.currentGroupIndex ?? 0) + 1)} 组 /'
+            ' 第 ${((run.currentQuestionIndex ?? 0) + 1)} 问',
+        colors.primary,
+      ),
+      'completed' => ('已完成', colors.primary),
+      'cancelled' => ('已取消', colors.onSurfaceVariant),
+      'failed' => ('失败（${run.errorCode ?? "INTERNAL_ERROR"}）', colors.error),
+      _ => (run.state, colors.onSurfaceVariant),
+    };
+    return Row(
+      children: [
+        SizedBox(
+          width: 14,
+          height: 14,
+          child:
+              run.isRunning
+                  ? const CircularProgressIndicator(strokeWidth: 2)
+                  : null,
+        ),
+        const SizedBox(width: 8),
+        Text(label, style: TextStyle(fontSize: 12, color: color)),
+        const SizedBox(width: 8),
+        Text(
+          '共 ${run.paramGroups.length} 组 × ${run.questions.length} 问',
+          style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
+/// 参数组对比表：一行一组，列为关键指标（横向滚动适配窄窗口）
+class _ComparisonTable extends StatelessWidget {
+  const _ComparisonTable({required this.results});
+
+  final List<EvaluationGroupMetrics> results;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: DataTable(
+        headingTextStyle: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: colors.onSurface,
+        ),
+        dataTextStyle: TextStyle(fontSize: 12, color: colors.onSurface),
+        columnSpacing: 24,
+        columns: const [
+          DataColumn(label: Text('参数组 (父/子)')),
+          DataColumn(label: Text('完成')),
+          DataColumn(label: Text('拒答')),
+          DataColumn(label: Text('TTFT P50')),
+          DataColumn(label: Text('TTFT P95')),
+          DataColumn(label: Text('输入 tokens')),
+          DataColumn(label: Text('输出 tokens')),
+          DataColumn(label: Text('重排降级')),
+        ],
+        rows: [
+          for (final result in results)
+            DataRow(
+              cells: [
+                DataCell(
+                  Text('${result.group.parentChunkChars}/${result.group.childChunkChars}'),
+                ),
+                DataCell(Text('${result.completed ?? "—"} / ${result.total ?? "—"}')),
+                DataCell(Text('${result.refused ?? "—"}')),
+                DataCell(Text(_ms(result.ttftP50Ms))),
+                DataCell(Text(_ms(result.ttftP95Ms))),
+                DataCell(Text('${result.inputTokens ?? "—"}')),
+                DataCell(Text('${result.outputTokens ?? "—"}')),
+                DataCell(Text('${result.rerankDegraded ?? "—"}')),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+
+  String _ms(int? value) => value == null ? '—' : '$value ms';
 }

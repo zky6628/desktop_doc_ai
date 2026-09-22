@@ -110,6 +110,25 @@
         "title": "Body_upload_file_upload_file_post",
         "type": "object"
       },
+      "ChunkingConfigBody": {
+        "description": "切片参数写入请求体",
+        "properties": {
+          "child_chunk_chars": {
+            "title": "Child Chunk Chars",
+            "type": "integer"
+          },
+          "parent_chunk_chars": {
+            "title": "Parent Chunk Chars",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "parent_chunk_chars",
+          "child_chunk_chars"
+        ],
+        "title": "ChunkingConfigBody",
+        "type": "object"
+      },
       "ClientMetricsBody": {
         "description": "客户端遥测请求体（不含问题、回答与密钥）",
         "properties": {
@@ -205,6 +224,37 @@
           "source"
         ],
         "title": "DeleteBySourceRequest",
+        "type": "object"
+      },
+      "EvaluationRunBody": {
+        "description": "评测运行创建请求体",
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "string"
+          },
+          "param_groups": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Param Groups",
+            "type": "array"
+          },
+          "questions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Questions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "questions",
+          "param_groups"
+        ],
+        "title": "EvaluationRunBody",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -592,6 +642,58 @@
         "tags": [
           "知识库管理"
         ]
+      }
+    },
+    "/api/v1/config/chunking": {
+      "get": {
+        "description": "在役切片参数：当前生效值与是否为默认预算",
+        "operationId": "get_chunking_config_api_v1_config_chunking_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Chunking Config"
+      },
+      "put": {
+        "description": "写入在役切片参数（覆盖式，写入即对后续导入/重建生效）",
+        "operationId": "put_chunking_config_api_v1_config_chunking_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChunkingConfigBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Chunking Config"
       }
     },
     "/api/v1/config/public": {
@@ -1124,6 +1226,155 @@
           }
         },
         "summary": "List Document Versions"
+      }
+    },
+    "/api/v1/evaluation-runs": {
+      "get": {
+        "description": "按知识库列出评测运行（创建时间倒序）",
+        "operationId": "list_evaluation_runs_api_v1_evaluation_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kb_id",
+            "required": true,
+            "schema": {
+              "title": "Kb Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Evaluation Runs"
+      },
+      "post": {
+        "description": "创建评测运行：预检后登记运行记录与编排任务（202）",
+        "operationId": "create_evaluation_run_api_v1_evaluation_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvaluationRunBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Evaluation Run"
+      }
+    },
+    "/api/v1/evaluation-runs/{run_id}": {
+      "get": {
+        "description": "读取评测运行：状态、进度与各组对比结果",
+        "operationId": "get_evaluation_run_api_v1_evaluation_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Evaluation Run"
+      }
+    },
+    "/api/v1/evaluation-runs/{run_id}/cancel": {
+      "post": {
+        "description": "请求取消评测运行（幂等；恢复重建由 Worker 收尾后入队）",
+        "operationId": "cancel_evaluation_run_api_v1_evaluation_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Evaluation Run"
       }
     },
     "/api/v1/health": {

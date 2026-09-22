@@ -280,12 +280,17 @@ def import_file(env, filename: str, content: bytes, preference: str = "auto",
 
 def ensure_pipeline_configs(config_repo) -> tuple[str, str, str]:
     """确保切片/嵌入/关键词三类配置行存在，返回三个配置 ID"""
-    from app.domain.chunking import chunking_config_json
+    from app.domain.chunking import (
+        DEFAULT_CHUNKING_PARAMS,
+        chunking_config_json,
+    )
     from app.domain.embedding import embedding_config_json
     from app.domain.keyword import keyword_config_json
 
     return (
-        config_repo.ensure_config("chunking", chunking_config_json()),
+        config_repo.ensure_config(
+            "chunking", chunking_config_json(DEFAULT_CHUNKING_PARAMS)
+        ),
         config_repo.ensure_config("embedding", embedding_config_json()),
         config_repo.ensure_config("keyword", keyword_config_json()),
     )

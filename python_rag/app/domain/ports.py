@@ -15,6 +15,8 @@ from .entities import (
     ConversationSummary,
     Document,
     DocumentVersion,
+    EvaluationRun,
+    EvaluationRunState,
     ExternalTask,
     IndexVersion,
     KnowledgeBase,
@@ -267,6 +269,97 @@ class PipelineConfigRepository(ABC):
         内容哈希命中在役配置行时直接复用；未命中时在事务内以类型内
         递增版本号创建新配置行。配置记录不可原地修改，参数变化通过
         新版本行表达。"""
+
+
+class SystemSettingsRepository(ABC):
+    """系统设置仓储：运行时可变键值设置的读写"""
+
+    @abstractmethod
+    def get(self, key: str) -> str | None:
+        """读取设置值 JSON 文本；键不存在返回 None"""
+
+    @abstractmethod
+    def put(self, key: str, value_json: str) -> None:
+        """写入设置值（覆盖语义，键不存在则创建）"""
+
+    @abstractmethod
+    def delete(self, key: str) -> None:
+        """删除设置（恢复键的缺省语义）"""
+
+
+class EvaluationRunRepository(ABC):
+    """评测运行仓储：运行事实与组粒度结果快照"""
+
+    @abstractmethod
+    def create(
+        self,
+        *,
+        knowledge_base_id: str,
+        task_id: str,
+        target_version_ids: Sequence[str],
+        questions: Sequence[str],
+        param_groups: Sequence[dict],
+    ) -> EvaluationRun:
+        """创建运行记录（running 态）"""
+
+    @abstractmethod
+    def get(self, run_id: str) -> EvaluationRun | None:
+        """按主键读取运行"""
+
+    @abstractmethod
+    def get_by_task(self, task_id: str) -> EvaluationRun | None:
+        """按编排任务读取运行（Worker 分派入口）"""
+
+    @abstractmethod
+    def list_by_knowledge_base(
+        self, knowledge_base_id: str, *, limit: int = 20
+    ) -> list[EvaluationRun]:
+        """按知识库列出运行（创建时间倒序截断）"""
+
+    @abstractmethod
+    def get_running(self) -> EvaluationRun | None:
+        """读取执行中的运行（评测独占，至多一个）"""
+
+    @abstractmethod
+    def mark_progress(
+        self, run_id: str, group_index: int, question_index: int
+    ) -> None:
+        """推进进度指针（组内问题边界调用）"""
+
+    @abstractmethod
+    def save_group_result(
+        self, run_id: str, group_index: int, result: dict
+    ) -> None:
+        """写入单组结果快照（增量替换该组位置）"""
+
+    @abstractmethod
+    def mark_terminal(
+        self,
+        run_id: str,
+        state: EvaluationRunState,
+        *,
+        error_code: str | None = None,
+    ) -> None:
+        """收尾为终态（completed/failed/cancelled）"""
+
+
+class EmbeddingCacheRepository(ABC):
+    """嵌入缓存仓储：模型 + 切片内容哈希维度的向量复用"""
+
+    @abstractmethod
+    def get_many(
+        self, model_name: str, content_hashes: Sequence[str]
+    ) -> dict[str, list[float]]:
+        """批量读取缓存向量，返回命中项的 hash → 向量映射"""
+
+    @abstractmethod
+    def put_many(
+        self,
+        model_name: str,
+        dimensions: int,
+        entries: Sequence[tuple[str, list[float]]],
+    ) -> None:
+        """批量写入缓存（幂等，同键已存在时保留既有值）"""
 
 
 class EmbeddingGateway(ABC):

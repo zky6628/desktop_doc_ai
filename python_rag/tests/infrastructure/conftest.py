@@ -18,9 +18,12 @@ from app.infrastructure.sqlite.repositories import (
     SQLiteContentRepository,
     SQLiteDocumentRepository,
     SQLiteDocumentVersionRepository,
+    SQLiteEmbeddingCacheRepository,
+    SQLiteEvaluationRunRepository,
     SQLiteExternalTaskRepository,
     SQLiteIndexVersionRepository,
     SQLiteKnowledgeBaseRepository,
+    SQLiteSystemSettingsRepository,
     SQLiteTaskRepository,
 )
 from app.infrastructure.sqlite.repositories.import_repository import (
@@ -54,6 +57,9 @@ def env(tmp_path):
         "indexes": SQLiteIndexVersionRepository(conn),
         "chunks": SQLiteChunkRepository(conn),
         "configs": SQLiteConfigRepository(conn),
+        "settings": SQLiteSystemSettingsRepository(conn),
+        "embedding_cache": SQLiteEmbeddingCacheRepository(conn),
+        "evaluations": SQLiteEvaluationRunRepository(conn),
         "imports": SQLiteImportRepository(conn),
     }
     vector_adapter = ChromaVectorIndexAdapter(
@@ -62,7 +68,13 @@ def env(tmp_path):
     keyword_index = SQLiteFtsKeywordIndex(conn)
     fake_gateway = FakeEmbeddingGateway()
 
-    def build(mineru=None, embedding_gateway=_UNSET, vector_index=None):
+    def build(
+        mineru=None,
+        embedding_gateway=_UNSET,
+        vector_index=None,
+        evaluation_repo=None,
+        evaluation_service=None,
+    ):
         return ImportTaskWorker(
             task_repo=repos["tasks"],
             document_repo=repos["documents"],
@@ -72,6 +84,8 @@ def env(tmp_path):
             index_repo=repos["indexes"],
             chunk_repo=repos["chunks"],
             config_repo=repos["configs"],
+            settings_repo=repos["settings"],
+            embedding_cache=repos["embedding_cache"],
             embedding_gateway=(
                 fake_gateway if embedding_gateway is _UNSET else embedding_gateway
             ),
@@ -83,6 +97,8 @@ def env(tmp_path):
             mineru_client=mineru,
             work_dir=str(tmp_path / "cloud_results"),
             worker_id="worker-test",
+            evaluation_repo=evaluation_repo,
+            evaluation_service=evaluation_service,
         )
 
     yield SimpleNamespace(

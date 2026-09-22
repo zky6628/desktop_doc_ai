@@ -53,6 +53,25 @@ class EvaluationController extends ChangeNotifier {
   /// 调试检索可用性（null = 服务端开关未知/配置加载失败，区域不渲染）
   bool? debugAvailable;
 
+  // ===================== 切片参数状态 =====================
+
+  /// 在役切片参数（null = 尚未加载成功）
+  ChunkingConfig? chunkingConfig;
+
+  ApiException? chunkingError;
+  bool chunkingSaving = false;
+
+  // ===================== 评测运行状态 =====================
+
+  /// 当前关注的评测运行（创建后轮询至终态）
+  EvaluationRun? evaluationRun;
+
+  ApiException? evaluationError;
+  bool evaluationSubmitting = false;
+  Timer? _evaluationPollTimer;
+  final LatestRequestGuard _chunkingGuard = LatestRequestGuard();
+  final LatestRequestGuard _evaluationGuard = LatestRequestGuard();
+
   // ===================== 调试检索状态 =====================
 
   bool debugLoading = false;
@@ -65,9 +84,116 @@ class EvaluationController extends ChangeNotifier {
   Future<void> loadInitial() async {
     loading = true;
     notifyListeners();
-    await Future.wait([_loadKnowledgeBases(), _loadMetrics(), _loadFeatures()]);
+    await Future.wait([
+      _loadKnowledgeBases(),
+      _loadMetrics(),
+      _loadFeatures(),
+      _loadChunkingConfig(),
+    ]);
     loading = false;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _evaluationPollTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 保存在役切片参数（写入即对后续导入/重建生效）
+  Future<void> saveChunkingParams({
+    required int parentChunkChars,
+    required int childChunkChars,
+  }) async {
+    if (chunkingSaving) return;
+    chunkingSaving = true;
+    chunkingError = null;
+    notifyListeners();
+    final seq = _chunkingGuard.begin();
+    try {
+      final saved = await _ops.putChunkingConfig(
+        parentChunkChars: parentChunkChars,
+        childChunkChars: childChunkChars,
+      );
+      if (!_chunkingGuard.isLatest(seq)) return;
+      chunkingConfig = saved;
+    } on ApiException catch (exc) {
+      if (!_chunkingGuard.isLatest(seq)) return;
+      chunkingError = exc;
+    } finally {
+      if (_chunkingGuard.isLatest(seq)) {
+        chunkingSaving = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// 创建切片参数对比评测运行并开始轮询进度
+  Future<void> startEvaluationRun({
+    required List<String> questions,
+    required List<ChunkingParams> paramGroups,
+  }) async {
+    final kbId = kbFilter;
+    if (kbId == null || evaluationSubmitting || evaluationRun?.isRunning == true) {
+      return;
+    }
+    evaluationSubmitting = true;
+    evaluationError = null;
+    notifyListeners();
+    final seq = _evaluationGuard.begin();
+    try {
+      final run = await _ops.createEvaluationRun(
+        knowledgeBaseId: kbId,
+        questions: questions,
+        paramGroups: paramGroups,
+      );
+      if (!_evaluationGuard.isLatest(seq)) return;
+      evaluationRun = run;
+      _startPolling(run.id);
+    } on ApiException catch (exc) {
+      if (!_evaluationGuard.isLatest(seq)) return;
+      evaluationError = exc;
+    } finally {
+      if (_evaluationGuard.isLatest(seq)) {
+        evaluationSubmitting = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  /// 请求取消当前评测运行
+  Future<void> cancelEvaluationRun() async {
+    final run = evaluationRun;
+    if (run == null || !run.isRunning) return;
+    try {
+      final updated = await _ops.cancelEvaluationRun(run.id);
+      if (!_evaluationGuard.isLatest(_evaluationGuard.begin())) return;
+      evaluationRun = updated;
+      if (!updated.isRunning) _evaluationPollTimer?.cancel();
+      notifyListeners();
+    } on ApiException {
+      // 取消失败保留轮询（任务仍在跑），错误经运行状态最终反映
+    }
+  }
+
+  void _startPolling(String runId) {
+    _evaluationPollTimer?.cancel();
+    _evaluationPollTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => _pollEvaluationRun(runId),
+    );
+  }
+
+  Future<void> _pollEvaluationRun(String runId) async {
+    try {
+      final run = await _ops.getEvaluationRun(runId);
+      if (!_evaluationGuard.isLatest(_evaluationGuard.begin())) return;
+      evaluationRun = run;
+      if (!run.isRunning) _evaluationPollTimer?.cancel();
+      notifyListeners();
+    } on ApiException {
+      // 单次轮询失败保留旧快照，连续失败由超时场景自然暴露
+    }
   }
 
   /// 手动刷新（保留当前筛选）
@@ -157,6 +283,19 @@ class EvaluationController extends ChangeNotifier {
       debugAvailable = config.features.localDebugEnabled;
     } on ApiException {
       // 开关未知时保持 null，调试区域不渲染（评测页主体不受影响）
+    }
+  }
+
+  Future<void> _loadChunkingConfig() async {
+    final seq = _chunkingGuard.begin();
+    try {
+      final config = await _ops.getChunkingConfig();
+      if (!_chunkingGuard.isLatest(seq)) return;
+      chunkingConfig = config;
+      chunkingError = null;
+    } on ApiException catch (exc) {
+      if (!_chunkingGuard.isLatest(seq)) return;
+      chunkingError = exc;
     }
   }
 }

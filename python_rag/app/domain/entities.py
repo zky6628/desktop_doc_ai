@@ -125,6 +125,34 @@ class QueryRunState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class EvaluationRunState(StrEnum):
+    """评测运行生命周期：running 为执行中，其余为终态"""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class EvaluationRun:
+    """评测运行：切片参数对比评测的自包含事实"""
+
+    id: str
+    knowledge_base_id: str
+    task_id: str
+    target_version_ids: tuple[str, ...]
+    questions: tuple[str, ...]
+    param_groups: tuple[dict, ...]
+    state: EvaluationRunState
+    current_group_index: int | None
+    current_question_index: int | None
+    results: list[dict] | None
+    error_code: str | None
+    created_at: str
+    updated_at: str
+
+
 @dataclass(frozen=True)
 class QueryRun:
     """查询运行：评测与状态的事实源"""

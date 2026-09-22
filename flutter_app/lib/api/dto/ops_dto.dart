@@ -405,3 +405,156 @@ class SearchDebugResult {
         },
       );
 }
+
+/// 在役切片参数（isDefault 为真表示未设置覆盖、沿用默认预算）
+class ChunkingConfig {
+  const ChunkingConfig({
+    required this.parentChunkChars,
+    required this.childChunkChars,
+    required this.isDefault,
+  });
+
+  final int parentChunkChars;
+  final int childChunkChars;
+  final bool isDefault;
+
+  factory ChunkingConfig.fromJson(Map<String, dynamic> json) => ChunkingConfig(
+        parentChunkChars:
+            json['parent_chunk_chars'] is int ? json['parent_chunk_chars'] as int : 0,
+        childChunkChars:
+            json['child_chunk_chars'] is int ? json['child_chunk_chars'] as int : 0,
+        isDefault: json['is_default'] == true,
+      );
+}
+
+/// 切片参数组（评测对比的单一组）
+class ChunkingParams {
+  const ChunkingParams({
+    required this.parentChunkChars,
+    required this.childChunkChars,
+  });
+
+  final int parentChunkChars;
+  final int childChunkChars;
+}
+
+/// 评测运行组指标快照（对比表的行数据）
+class EvaluationGroupMetrics {
+  const EvaluationGroupMetrics({
+    required this.group,
+    required this.queryRunIds,
+    required this.metrics,
+  });
+
+  final ChunkingParams group;
+  final List<String> queryRunIds;
+  final Map<String, Object?> metrics;
+
+  int? _metricInt(String key) =>
+      metrics[key] is int ? metrics[key] as int : null;
+
+  int? get total => _metricInt('total');
+  int? get completed => _metricInt('completed');
+  int? get failed => _metricInt('failed');
+  int? get refused => _metricInt('refused');
+  int? get rerankDegraded => _metricInt('rerank_degraded');
+  int? get ttftP50Ms => _metricInt('ttft_p50_ms');
+  int? get ttftP95Ms => _metricInt('ttft_p95_ms');
+  int? get inputTokens => _metricInt('input_tokens');
+  int? get outputTokens => _metricInt('output_tokens');
+
+  factory EvaluationGroupMetrics.fromJson(Map<String, dynamic> json) {
+    final group = json['group'];
+    return EvaluationGroupMetrics(
+      group: ChunkingParams(
+        parentChunkChars: group is Map<String, dynamic> &&
+                group['parent_chunk_chars'] is int
+            ? group['parent_chunk_chars'] as int
+            : 0,
+        childChunkChars: group is Map<String, dynamic> &&
+                group['child_chunk_chars'] is int
+            ? group['child_chunk_chars'] as int
+            : 0,
+      ),
+      queryRunIds: [
+        if (json['query_run_ids'] is List)
+          for (final item in json['query_run_ids'] as List)
+            if (item is String) item,
+      ],
+      metrics: json['metrics'] is Map<String, dynamic>
+          ? Map<String, Object?>.from(json['metrics'] as Map<String, dynamic>)
+          : const {},
+    );
+  }
+}
+
+/// 评测运行：状态、进度与各组对比结果
+class EvaluationRun {
+  const EvaluationRun({
+    required this.id,
+    required this.knowledgeBaseId,
+    required this.taskId,
+    required this.state,
+    required this.questions,
+    required this.paramGroups,
+    required this.currentGroupIndex,
+    required this.currentQuestionIndex,
+    required this.results,
+    required this.errorCode,
+  });
+
+  final String id;
+  final String knowledgeBaseId;
+  final String taskId;
+
+  /// running / completed / failed / cancelled
+  final String state;
+  final List<String> questions;
+  final List<ChunkingParams> paramGroups;
+  final int? currentGroupIndex;
+  final int? currentQuestionIndex;
+  final List<EvaluationGroupMetrics>? results;
+  final String? errorCode;
+
+  bool get isRunning => state == 'running';
+
+  factory EvaluationRun.fromJson(Map<String, dynamic> json) => EvaluationRun(
+        id: json['id'] is String ? json['id'] as String : '',
+        knowledgeBaseId: json['knowledge_base_id'] is String
+            ? json['knowledge_base_id'] as String
+            : '',
+        taskId: json['task_id'] is String ? json['task_id'] as String : '',
+        state: json['state'] is String ? json['state'] as String : '',
+        questions: [
+          if (json['questions'] is List)
+            for (final item in json['questions'] as List)
+              if (item is String) item,
+        ],
+        paramGroups: [
+          if (json['param_groups'] is List)
+            for (final item in json['param_groups'] as List)
+              if (item is Map<String, dynamic> &&
+                  item['parent_chunk_chars'] is int &&
+                  item['child_chunk_chars'] is int)
+                ChunkingParams(
+                  parentChunkChars: item['parent_chunk_chars'] as int,
+                  childChunkChars: item['child_chunk_chars'] as int,
+                ),
+        ],
+        currentGroupIndex:
+            json['current_group_index'] is int
+                ? json['current_group_index'] as int
+                : null,
+        currentQuestionIndex:
+            json['current_question_index'] is int
+                ? json['current_question_index'] as int
+                : null,
+        results: [
+          if (json['results'] is List)
+            for (final item in json['results'] as List)
+              if (item is Map<String, dynamic>)
+                EvaluationGroupMetrics.fromJson(item),
+        ],
+        errorCode: json['error_code'] is String ? json['error_code'] as String : null,
+      );
+}

@@ -32,6 +32,7 @@ from .conversations import (
 )
 from .documents import DocumentDependencies, create_documents_router
 from .envelope import error_envelope, new_request_id, serialize_task, success_envelope
+from .evaluations import EvaluationDependencies, create_evaluations_router
 from .files import chunk_file_reader
 from .knowledge_bases import (
     KnowledgeBaseDependencies,
@@ -65,6 +66,7 @@ class ApiV1Dependencies:
     conversations: ConversationDependencies | None = None
     ops: OpsDependencies | None = None
     search: SearchDependencies | None = None
+    evaluations: EvaluationDependencies | None = None
 
 
 class CloudConfirmationRequest(BaseModel):
@@ -101,6 +103,8 @@ def create_api_router(deps: ApiV1Dependencies) -> APIRouter:
         router.include_router(create_ops_router(deps.ops))
     if deps.search is not None:
         router.include_router(create_search_router(deps.search))
+    if deps.evaluations is not None:
+        router.include_router(create_evaluations_router(deps.evaluations))
 
     @router.post("/knowledge-bases/{kb_id}/documents")
     def upload_documents(
@@ -238,6 +242,7 @@ __all__ = [
     "CloudConfirmationRequest",
     "ConversationDependencies",
     "DocumentDependencies",
+    "EvaluationDependencies",
     "KnowledgeBaseDependencies",
     "MetricsDependencies",
     "OpsDependencies",
@@ -247,6 +252,7 @@ __all__ = [
     "create_api_router",
     "create_conversations_router",
     "create_documents_router",
+    "create_evaluations_router",
     "create_knowledge_bases_router",
     "create_metrics_router",
     "create_ops_router",

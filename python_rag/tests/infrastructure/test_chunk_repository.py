@@ -4,6 +4,7 @@ import pytest
 
 from app.domain.chunking import (
     CHUNKING_CONFIG_TYPE,
+    DEFAULT_CHUNKING_PARAMS,
     Chunk,
     chunking_config_json,
     make_chunk,
@@ -205,7 +206,7 @@ def test_get_chunk_anchors_empty_input_returns_empty(env):
 
 def test_config_reused_for_same_content_and_new_version_for_change(env):
     """同内容配置幂等复用；内容变化创建类型内递增的新版本行"""
-    config_json = chunking_config_json()
+    config_json = chunking_config_json(DEFAULT_CHUNKING_PARAMS)
 
     first_id = env.configs.ensure_config(CHUNKING_CONFIG_TYPE, config_json)
     again_id = env.configs.ensure_config(CHUNKING_CONFIG_TYPE, config_json)

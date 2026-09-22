@@ -28,7 +28,7 @@ from .schema_helpers import (
 def _fresh_db(tmp_path):
     """创建应用过全部迁移的临时库（测试辅助）"""
     db_path, applied = fresh_db(tmp_path, name="schema_content.db")
-    assert applied == 9
+    assert applied == 12
     return db_path
 
 

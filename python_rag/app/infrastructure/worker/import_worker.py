@@ -26,10 +26,13 @@ import time
 from app.domain import embedding, keyword, parser_routing
 from app.domain.chunking import (
     CHUNKING_CONFIG_TYPE,
+    CHUNKING_OVERRIDE_SETTING_KEY,
+    ChunkingParams,
     StoredChunk,
     chunk_blocks,
     chunking_config_json,
     integrity_hash,
+    resolve_chunking_params,
 )
 from app.domain.entities import (
     DocumentVersion,
@@ -70,16 +73,20 @@ from app.domain.ports import (
     ContentRepository,
     DocumentRepository,
     DocumentVersionRepository,
+    EmbeddingCacheRepository,
     EmbeddingGateway,
+    EvaluationRunRepository,
     ExternalTaskRepository,
     IndexVersionRepository,
     KeywordIndexGateway,
     PipelineConfigRepository,
+    SystemSettingsRepository,
     TaskRepository,
     TextTokenizer,
     VectorIndexGateway,
 )
 from app.domain.task_state import HEARTBEAT_INTERVAL_SECONDS
+from app.infrastructure.evaluation import EvaluationCancelled, EvaluationRunService
 from app.infrastructure.maintenance import DeletionService, IndexCleanupService
 from app.infrastructure.mineru import (
     MinerUClient,
@@ -232,6 +239,8 @@ class ImportTaskWorker:
         index_repo: IndexVersionRepository,
         chunk_repo: ChunkRepository,
         config_repo: PipelineConfigRepository,
+        settings_repo: SystemSettingsRepository,
+        embedding_cache: EmbeddingCacheRepository,
         embedding_gateway: EmbeddingGateway | None,
         vector_index: VectorIndexGateway,
         text_tokenizer: TextTokenizer,
@@ -239,6 +248,8 @@ class ImportTaskWorker:
         mineru_client: MinerUClient | None,
         work_dir: str,
         worker_id: str,
+        evaluation_repo: EvaluationRunRepository | None = None,
+        evaluation_service: EvaluationRunService | None = None,
     ) -> None:
         self._task_repo = task_repo
         self._document_repo = document_repo
@@ -248,6 +259,8 @@ class ImportTaskWorker:
         self._index_repo = index_repo
         self._chunk_repo = chunk_repo
         self._config_repo = config_repo
+        self._settings_repo = settings_repo
+        self._embedding_cache = embedding_cache
         self._embedding_gateway = embedding_gateway
         self._vector_index = vector_index
         self._text_tokenizer = text_tokenizer
@@ -255,6 +268,8 @@ class ImportTaskWorker:
         self._mineru = mineru_client
         self._work_dir = work_dir
         self._worker_id = worker_id
+        self._evaluation_repo = evaluation_repo
+        self._evaluation_service = evaluation_service
         self._cleanup = IndexCleanupService(
             index_repo=index_repo,
             chunk_repo=chunk_repo,
@@ -426,6 +441,9 @@ class ImportTaskWorker:
         if task.task_type == "rebuild_index":
             self._run_rebuild(task)
             return
+        if task.task_type == "evaluation_run":
+            self._run_evaluation(task)
+            return
         if task.task_type == "delete_kb":
             self._run_delete_kb(task)
             return
@@ -565,6 +583,67 @@ class ImportTaskWorker:
         索引验证通过前不触碰既有活动索引，任何失败零损伤
         """
         self._run_chunking(task, self._require_version(task))
+
+    def _run_evaluation(self, task: Task) -> None:
+        """评测运行编排：复用导入管线逐版本重建（以在役参数执行）
+
+        管线检查点对评测任务同样生效：取消请求在检查点收尾任务并
+        以取消信号打断编排（编排器负责恢复在役参数与收尾运行终态）；
+        全部终态路径统一入队恢复重建任务（参数已回写为评测前值，
+        同参数重建经嵌入缓存近零成本），队列满时留待用户手动重建
+        （参数事实已正确，缺口在派生索引，任务中心可见）
+        """
+        if self._evaluation_service is None or self._evaluation_repo is None:
+            raise RuntimeError("评测编排依赖未装配")
+        run = self._evaluation_repo.get_by_task(task.id)
+        if run is None:
+            raise RuntimeError(f"任务缺少评测运行记录: {task.id}")
+
+        def rebuild_version(version_id: str) -> None:
+            version = self._version_repo.get(version_id)
+            if version is None:
+                raise RuntimeError(f"评测目标版本不存在: {version_id}")
+            try:
+                # 管线完成不收尾任务：评测任务由编排方统一收尾
+                self._run_chunking(task, version, mark_succeeded=False)
+            except _TaskInterrupted:
+                # 检查点已把任务收尾为取消终态；转取消信号打断编排
+                raise EvaluationCancelled() from None
+
+        def is_cancel_requested() -> bool:
+            current = self._task_repo.get(task.id)
+            return (
+                current is not None and current.state is TaskStatus.CANCEL_REQUESTED
+            )
+
+        self._evaluation_service.execute(
+            run, rebuild_version=rebuild_version, is_cancel_requested=is_cancel_requested
+        )
+        self._enqueue_evaluation_restore(run)
+        finished = self._task_repo.get(task.id)
+        if finished is None:
+            raise RuntimeError(f"评测任务丢失: {task.id}")
+        if finished.state is TaskStatus.CANCELLED:
+            return  # 检查点已收尾为取消终态
+        if finished.state is TaskStatus.CANCEL_REQUESTED:
+            # 取消请求落在最后检查点之后：按取消语义收尾
+            self._task_repo.cancel_at_checkpoint(task.id, self._worker_id)
+            return
+        self._succeed(task.id)
+
+    def _enqueue_evaluation_restore(self, run) -> None:
+        """评测终态后入队恢复重建（参数已回写评测前值）"""
+        assert run is not None
+        for version_id in run.target_version_ids:
+            try:
+                self._task_repo.create(
+                    "rebuild_index", document_version_id=version_id
+                )
+            except TaskQueueFullError:
+                logger.warning(
+                    "评测 %s 恢复重建入队被拒（队列已满）", run.id
+                )
+                return
 
     def _run_delete_kb(self, task: Task) -> None:
         """知识库删除：物理清理库内全部文档的派生资产"""
@@ -807,22 +886,29 @@ class ImportTaskWorker:
             # 阶段推进被拒的唯一可能：取消请求先转入等待取消状态
             self._task_repo.cancel_at_checkpoint(task.id, self._worker_id)
 
-    def _run_chunking(self, task: Task, version: DocumentVersion) -> None:
+    def _run_chunking(
+        self, task: Task, version: DocumentVersion, *, mark_succeeded: bool = True
+    ) -> None:
         """切片阶段：确保配置 -> 复用或创建 staging 索引版本 -> 切片落库
 
         切片输入读取已落库的解析事实（与内存解析模型解耦），中断
         续跑无需重新解析；写入按序号幂等 upsert，重试不产生重复。
         切片/嵌入/关键词三类配置在索引创建时一并登记，保证索引版本
-        可追溯全部构建参数
+        可追溯全部构建参数。切片参数在任务内解析一次并贯穿切片与
+        配置登记，保证两者使用同一在役值。mark_succeeded 为假时管线
+        完成不收尾任务（评测编排复用管线，任务由编排方收尾）
         """
         self._set_stage(task.id, TaskStage.CHUNKING)
-        index_version = self._ensure_index_version(version.id)
+        params = self._current_chunking_params()
+        index_version = self._ensure_index_version(version.id, params)
         blocks = self._content_repo.list_document_blocks(version.id)
-        chunks = chunk_blocks(blocks)
+        chunks = chunk_blocks(blocks, params)
         self._chunk_repo.replace_index_chunks(index_version.id, chunks)
-        self._run_vector_pipeline(task, version)
+        self._run_vector_pipeline(task, version, mark_succeeded=mark_succeeded)
 
-    def _run_vector_pipeline(self, task: Task, version: DocumentVersion) -> None:
+    def _run_vector_pipeline(
+        self, task: Task, version: DocumentVersion, *, mark_succeeded: bool = True
+    ) -> None:
         """索引管线：嵌入批次流水 -> 向量写入边界 -> 关键词写入 -> 验证 -> 激活
 
         嵌入以批次为粒度流式写入 staging 集合并推进游标 checkpoint，
@@ -830,7 +916,9 @@ class ImportTaskWorker:
         验证通过后激活事务切换活动指针并回填文档级指针——失败路径
         不触碰任何既有活动索引
         """
-        index_version = self._ensure_index_version(version.id)
+        index_version = self._ensure_index_version(
+            version.id, self._current_chunking_params()
+        )
         stored_chunks = self._chunk_repo.list_index_chunks(index_version.id)
         children = [
             stored for stored in stored_chunks if stored.chunk.parent_ordinal is not None
@@ -853,7 +941,8 @@ class ImportTaskWorker:
         self._document_repo.set_active_version(version.document_id, version.id)
         # 激活使旧活动索引退役：其派生资产由清理任务回收
         self._spawn_cleanup_task()
-        self._succeed(task.id)
+        if mark_succeeded:
+            self._succeed(task.id)
 
     def _spawn_cleanup_task(self) -> None:
         """激活完成后登记清理任务，退役索引的派生资产由此回收"""
@@ -868,7 +957,10 @@ class ImportTaskWorker:
         """按批嵌入子切片并写入 staging 集合，逐批推进游标 checkpoint
 
         先写向量后推进游标：中断重写当前批，向量按记录 ID 幂等，
-        续跑只补尾部批次（向量化 API 成本不重复）
+        续跑只补尾部批次（向量化 API 成本不重复）。嵌入前先查内容
+        哈希缓存：命中项直接复用既有向量，只对缺失项调用嵌入 API
+        （同内容重导入与参数实验后的恢复重建零 API 成本）；新向量
+        回填缓存
         """
         gateway = self._require_gateway()
         total = len(children)
@@ -879,9 +971,7 @@ class ImportTaskWorker:
             if batch[-1].chunk.ordinal <= done_ordinal:
                 done_count += len(batch)
                 continue
-            vectors = gateway.embed_texts(
-                [stored.chunk.content for stored in batch]
-            )
+            vectors = self._embed_batch_with_cache(gateway, batch)
             self._vector_index.upsert_vectors(
                 collection, [stored.id for stored in batch], vectors
             )
@@ -898,6 +988,37 @@ class ImportTaskWorker:
                 ),
             )
             self._checkpoint(task.id)
+
+    def _embed_batch_with_cache(
+        self, gateway: EmbeddingGateway, batch: list[StoredChunk]
+    ) -> list[list[float]]:
+        """单批嵌入：缓存命中直接复用，缺失项调 API 后回填
+
+        组装顺序与切片顺序一致；缓存行维度与网关产出维度不符时按
+        未命中处理（损坏行不信任，重新嵌入即自愈）
+        """
+        hashes = [stored.chunk.content_hash for stored in batch]
+        cached = self._embedding_cache.get_many(embedding.EMBEDDING_MODEL, hashes)
+        missing = [
+            (stored.chunk.content_hash, stored.chunk.content)
+            for stored in batch
+            if stored.chunk.content_hash not in cached
+        ]
+        fresh = (
+            gateway.embed_texts([content for _, content in missing])
+            if missing
+            else []
+        )
+        if fresh:
+            self._embedding_cache.put_many(
+                embedding.EMBEDDING_MODEL,
+                len(fresh[0]),
+                [(content_hash, vector) for (content_hash, _), vector in zip(missing, fresh)],
+            )
+        fresh_by_hash = {
+            content_hash: vector for (content_hash, _), vector in zip(missing, fresh)
+        }
+        return [cached[h] if h in cached else fresh_by_hash[h] for h in hashes]
 
     def _validate_index(
         self,
@@ -932,7 +1053,15 @@ class ImportTaskWorker:
             integrity_hash=integrity_hash([stored.chunk for stored in children]),
         )
 
-    def _ensure_index_version(self, document_version_id: str) -> IndexVersion:
+    def _current_chunking_params(self) -> ChunkingParams:
+        """解析在役切片参数（系统设置覆盖，缺省即默认预算）"""
+        return resolve_chunking_params(
+            self._settings_repo.get(CHUNKING_OVERRIDE_SETTING_KEY)
+        )
+
+    def _ensure_index_version(
+        self, document_version_id: str, params: ChunkingParams
+    ) -> IndexVersion:
         """确保三类配置行就位，复用或创建该文档版本的 staging 索引版本
 
         同一文档版本同时至多一个在途 staging 索引：切片中断续跑复用
@@ -941,7 +1070,7 @@ class ImportTaskWorker:
         清理），以新索引表达参数变化
         """
         chunking_config_id = self._config_repo.ensure_config(
-            CHUNKING_CONFIG_TYPE, chunking_config_json()
+            CHUNKING_CONFIG_TYPE, chunking_config_json(params)
         )
         embedding_profile_id = self._config_repo.ensure_config(
             embedding.EMBEDDING_CONFIG_TYPE, embedding.embedding_config_json()
