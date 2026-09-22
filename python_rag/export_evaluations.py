@@ -30,10 +30,17 @@ def _export_rows(conn: sqlite3.Connection):
     chunking_config_cache: dict[str, dict | None] = {}
     for run in runs:
         candidates = conn.execute(
-            "SELECT chunk_id, source, vector_rank, vector_score, keyword_rank,"
-            " keyword_score, rrf_rank, rrf_score, rerank_rank, rerank_score,"
-            " in_context FROM retrieval_candidates WHERE query_run_id = ?"
-            " ORDER BY rrf_rank",
+            "SELECT rc.chunk_id, rc.source, rc.vector_rank, rc.vector_score,"
+            " rc.keyword_rank, rc.keyword_score, rc.rrf_rank, rc.rrf_score,"
+            " rc.rerank_rank, rc.rerank_score, rc.in_context,"
+            " d.display_name"
+            " FROM retrieval_candidates rc"
+            " LEFT JOIN chunks ch ON ch.id = rc.chunk_id"
+            " LEFT JOIN index_versions iv ON iv.id = ch.index_version_id"
+            " LEFT JOIN document_versions dv ON dv.id = iv.document_version_id"
+            " LEFT JOIN documents d ON d.id = dv.document_id"
+            " WHERE rc.query_run_id = ?"
+            " ORDER BY rc.rrf_rank",
             (run[0],),
         ).fetchall()
         citations = conn.execute(
@@ -75,6 +82,7 @@ def _export_rows(conn: sqlite3.Connection):
                     "rerank_rank": c[8],
                     "rerank_score": c[9],
                     "in_context": bool(c[10]),
+                    "file_name": c[11],
                 }
                 for c in candidates
             ],
@@ -132,8 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.out:
             with open(args.out, "w", encoding="utf-8") as handle:
-                for line in lines:
-                    handle.write(line + "\n")
+                handle.writelines(line + "\n" for line in lines)
             print(f"exported: {args.out}")
         else:
             for line in lines:

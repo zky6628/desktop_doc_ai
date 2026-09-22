@@ -1,0 +1,3 @@
+{"question": "年假有几天？", "relevant_docs": ["员工手册.pdf"], "sources": [{"file": "员工手册.pdf", "page": 12, "section": "考勤制度"}], "relevance": {"员工手册.pdf": 2}}
+{"question": "报销流程是什么？", "relevant_docs": ["财务制度.docx", "报销指南.pdf"], "relevance": {"财务制度.docx": 2, "报销指南.pdf": 1}}
+{"question": "公司成立于哪一年？", "relevant_docs": ["公司简介.md"]}
