@@ -36,15 +36,6 @@ Future<void> main() async {
   );
   final conversationClient = ConversationApiClient(address: addressStore);
   final opsClient = OpsApiClient(address: addressStore);
-  final bundle = ApiBundle(
-    preferences: preferences,
-    addressStore: addressStore,
-    themeController: themeController,
-    knowledgeClient: knowledgeClient,
-    queryClient: queryClient,
-    conversationClient: conversationClient,
-    opsClient: opsClient,
-  );
   // 问答控制器为全局单例：外壳侧边栏（新建会话/会话列表）与问答页共享
   // 同一实例；知识库解析经壳层控制器广播实现跨页同步。会话列表为跨库
   // 全量历史，创建即预载供侧边栏展示
@@ -56,6 +47,16 @@ Future<void> main() async {
     onKnowledgeBaseResolved: shellController.setCurrentKnowledgeBase,
   );
   unawaited(chatController.reloadConversations());
+  final bundle = ApiBundle(
+    preferences: preferences,
+    addressStore: addressStore,
+    themeController: themeController,
+    knowledgeClient: knowledgeClient,
+    queryClient: queryClient,
+    conversationClient: conversationClient,
+    opsClient: opsClient,
+    chatController: chatController,
+  );
 
   runApp(
     MultiProvider(

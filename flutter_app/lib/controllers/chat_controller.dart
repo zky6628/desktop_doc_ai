@@ -112,6 +112,11 @@ class ChatController extends ChangeNotifier {
   DateTime? _firstSseTokenReceivedAt;
   DateTime? _firstTokenRenderedAt;
 
+  /// 最近一次生成的客户端遥测快照（评测模式读取）：
+  /// (queryId, 发送时刻, SSE 首 token 时刻, 首帧渲染时刻)；
+  /// 三时间戳齐全才有值，缺一为 null
+  (String, DateTime, DateTime, DateTime)? lastTelemetry;
+
   ApiException? actionError;
 
   /// 生成期间知识库页切库的待补载 KB（生成结束自动重载）
@@ -603,6 +608,7 @@ class ChatController extends ChangeNotifier {
         renderedAt == null) {
       return;
     }
+    lastTelemetry = (queryId, sendAt, receivedAt, renderedAt);
     try {
       await _query.reportClientMetrics(
         queryId: queryId,

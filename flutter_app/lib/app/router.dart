@@ -5,6 +5,7 @@ import '../api/conversation_api_client.dart';
 import '../api/knowledge_api_client.dart';
 import '../api/ops_api_client.dart';
 import '../api/query_api_client.dart';
+import '../controllers/chat_controller.dart';
 import '../controllers/theme_controller.dart';
 import '../pages/chat_page.dart';
 import '../pages/document_detail_page.dart';
@@ -26,6 +27,7 @@ class ApiBundle {
     required this.queryClient,
     required this.conversationClient,
     required this.opsClient,
+    required this.chatController,
   });
 
   final AppPreferences preferences;
@@ -35,6 +37,7 @@ class ApiBundle {
   final QueryApiClient queryClient;
   final ConversationApiClient conversationClient;
   final OpsApiClient opsClient;
+  final ChatController chatController;
 }
 
 /// 工作台路由：五个一级页面以 IndexedStack 分支承载，切换互不丢状态
@@ -112,6 +115,7 @@ GoRouter createRouter({
                   knowledgeClient: bundle.knowledgeClient,
                   opsClient: bundle.opsClient,
                   initialKbId: state.uri.queryParameters['kb'],
+                  chatController: bundle.chatController,
                 ),
               ),
             ],

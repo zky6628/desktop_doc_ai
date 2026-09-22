@@ -10,7 +10,7 @@ from .schema_helpers import FIXED_TIME, fresh_db, insert_kb
 
 
 def test_export_writes_jsonl_with_run_candidates_and_citations(tmp_path):
-    """导出按行组织：运行事实 + 候选（各阶段分数）+ 引用快照"""
+    """导出按行组织：运行事实 + 客户端 TTFT + 候选（各阶段分数）+ 引用快照"""
     db_path, _ = fresh_db(tmp_path, name="export.db")
     conn = connect(db_path)
     kb_id = insert_kb(conn, "导出库")
@@ -47,6 +47,13 @@ def test_export_writes_jsonl_with_run_candidates_and_citations(tmp_path):
         " VALUES (?, 'msg-1', 1, ?, '引文', 'validated', ?, ?)",
         (uuid7(), kb_id, FIXED_TIME, run_id),
     )
+    conn.execute(
+        "INSERT INTO query_client_metrics (query_run_id, client_send_at,"
+        " first_sse_token_received_at, first_token_rendered_at, client_ttft_ms,"
+        " reported_at)"
+        " VALUES (?, ?, ?, ?, 812, ?)",
+        (run_id, FIXED_TIME, FIXED_TIME, FIXED_TIME, FIXED_TIME),
+    )
     conn.close()
 
     out_path = tmp_path / "eval.jsonl"
@@ -60,6 +67,7 @@ def test_export_writes_jsonl_with_run_candidates_and_citations(tmp_path):
     assert row["state"] == "completed"
     assert row["server_ttft_ms"] == 500
     assert row["model_ttft_ms"] is None
+    assert row["client_ttft_ms"] == 812
     assert row["candidates"] == [
         {
             "chunk_id": None,
@@ -73,6 +81,7 @@ def test_export_writes_jsonl_with_run_candidates_and_citations(tmp_path):
             "rerank_rank": 1,
             "rerank_score": 0.92,
             "in_context": True,
+            "file_name": None,
         }
     ]
     assert row["citations"][0]["validation_state"] == "validated"

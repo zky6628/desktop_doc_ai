@@ -79,25 +79,24 @@ Future<Widget> _assemble(
   required KnowledgeApiClient knowledgeClient,
 }) async {
   final themeController = ThemeController(appPreferences);
+  // 问答控制器与页面共享同一实例；会话列表请求在测试环境必然失败
+  // （FakeAsync 拦截 HTTP），按列表错误空态渲染
+  final chatController = ChatController(
+    queryClient: QueryApiClient(
+      address: addressStore,
+      instanceId: appPreferences.clientInstanceId,
+    ),
+    conversationClient: ConversationApiClient(address: addressStore),
+    knowledgeClient: knowledgeClient,
+    preferences: appPreferences,
+  );
   return MultiProvider(
     providers: [
       ChangeNotifierProvider<AppShellController>(
         create: (context) => AppShellController(address: addressStore),
       ),
       ChangeNotifierProvider<ThemeController>.value(value: themeController),
-      // 问答控制器与页面共享同一实例；会话列表请求在测试环境必然失败
-      // （FakeAsync 拦截 HTTP），按列表错误空态渲染
-      ChangeNotifierProvider<ChatController>(
-        create: (context) => ChatController(
-          queryClient: QueryApiClient(
-            address: addressStore,
-            instanceId: appPreferences.clientInstanceId,
-          ),
-          conversationClient: ConversationApiClient(address: addressStore),
-          knowledgeClient: knowledgeClient,
-          preferences: appPreferences,
-        ),
-      ),
+      ChangeNotifierProvider<ChatController>.value(value: chatController),
     ],
     child: WorkbenchApp(
       router: createRouter(
@@ -114,6 +113,7 @@ Future<Widget> _assemble(
           ),
           conversationClient: ConversationApiClient(address: addressStore),
           opsClient: OpsApiClient(address: addressStore),
+          chatController: chatController,
         ),
       ),
       themeController: themeController,

@@ -20,11 +20,13 @@ DEFAULT_DB = BASE_DIR / "data" / "workbench.db"
 def _export_rows(conn: sqlite3.Connection):
     """按创建顺序产出每个查询运行的导出行"""
     runs = conn.execute(
-        "SELECT id, knowledge_base_id, question, state, refused,"
-        " rerank_degraded, retrieval_ms, rerank_ms, prompt_build_ms,"
-        " model_ttft_ms, server_ttft_ms, total_ms, input_tokens,"
-        " output_tokens, error_code, created_at"
-        " FROM query_runs ORDER BY created_at, id"
+        "SELECT qr.id, qr.knowledge_base_id, qr.question, qr.state, qr.refused,"
+        " qr.rerank_degraded, qr.retrieval_ms, qr.rerank_ms, qr.prompt_build_ms,"
+        " qr.model_ttft_ms, qr.server_ttft_ms, qr.total_ms, qr.input_tokens,"
+        " qr.output_tokens, qr.error_code, qr.created_at, qcm.client_ttft_ms"
+        " FROM query_runs qr"
+        " LEFT JOIN query_client_metrics qcm ON qcm.query_run_id = qr.id"
+        " ORDER BY qr.created_at, qr.id"
     ).fetchall()
     # 切片参数配置缓存：配置行内容在运行间大量重复，按配置 ID 去重读取
     chunking_config_cache: dict[str, dict | None] = {}
@@ -66,6 +68,7 @@ def _export_rows(conn: sqlite3.Connection):
             "output_tokens": run[13],
             "error_code": run[14],
             "created_at": run[15],
+            "client_ttft_ms": run[16],
             "chunking_config": _chunking_config_for_run(
                 conn, run[0], chunking_config_cache
             ),

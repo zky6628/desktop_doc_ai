@@ -7,6 +7,7 @@ import '../api/dto/ops_dto.dart';
 import '../api/knowledge_api_client.dart';
 import '../api/ops_api_client.dart';
 import '../api/query_api_client.dart';
+import '../controllers/client_benchmark_runner.dart';
 import '../controllers/evaluation_controller.dart';
 
 /// 评测页（只读）：查询聚合指标、TTFT 分位、token 用量与本地调试检索
@@ -23,6 +24,7 @@ class EvaluationPage extends StatefulWidget {
     required this.knowledgeClient,
     required this.opsClient,
     this.initialKbId,
+    this.chatController,
   });
 
   final QueryApiClient queryClient;
@@ -31,6 +33,10 @@ class EvaluationPage extends StatefulWidget {
 
   /// 路由 query 恢复的知识库筛选（/evaluation?kb=）
   final String? initialKbId;
+
+  /// 全局问答控制器（客户端 TTFT 评测入口依赖；测试环境可省略，
+  /// 省略时评测入口不渲染）
+  final dynamic chatController;
 
   @override
   State<EvaluationPage> createState() => _EvaluationPageState();
@@ -143,6 +149,15 @@ class _EvaluationPageState extends State<EvaluationPage> {
     final debugCard = controller.debugAvailable == true
         ? _DebugSearchCard(controller: controller)
         : null;
+    // 客户端 TTFT 评测入口：调试开关开启且问答控制器可用时渲染
+    final chatController = widget.chatController;
+    final clientTtftCard =
+        controller.debugAvailable == true && chatController != null
+            ? _ClientTtftCard(
+                controller: controller,
+                chatController: chatController,
+              )
+            : null;
     // 切片参数与评测运行为常驻区域（调参是评测行为的一部分）
     final chunkingCard = _ChunkingCard(controller: controller);
     final evaluationCard = _EvaluationRunCard(controller: controller);
@@ -155,6 +170,7 @@ class _EvaluationPageState extends State<EvaluationPage> {
           const SizedBox(height: 16),
           evaluationCard,
           const SizedBox(height: 16),
+          if (clientTtftCard != null) ...[clientTtftCard, const SizedBox(height: 16)],
           if (debugCard != null) ...[debugCard, const SizedBox(height: 16)],
           SizedBox(height: 420, child: _EmptyView()),
         ],
@@ -165,6 +181,7 @@ class _EvaluationPageState extends State<EvaluationPage> {
       debugCard: debugCard,
       chunkingCard: chunkingCard,
       evaluationCard: evaluationCard,
+      clientTtftCard: clientTtftCard,
     );
   }
 }
@@ -176,6 +193,7 @@ class _MetricsView extends StatelessWidget {
     this.debugCard,
     this.chunkingCard,
     this.evaluationCard,
+    this.clientTtftCard,
   });
 
   final QueryMetricsSummary metrics;
@@ -187,6 +205,9 @@ class _MetricsView extends StatelessWidget {
   final Widget? chunkingCard;
   final Widget? evaluationCard;
 
+  /// 客户端 TTFT 评测入口卡片（调试开关 + 问答控制器就绪时渲染）
+  final Widget? clientTtftCard;
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -194,6 +215,7 @@ class _MetricsView extends StatelessWidget {
       children: [
         if (chunkingCard != null) ...[chunkingCard!, const SizedBox(height: 16)],
         if (evaluationCard != null) ...[evaluationCard!, const SizedBox(height: 16)],
+        if (clientTtftCard != null) ...[clientTtftCard!, const SizedBox(height: 16)],
         if (debugCard != null) ...[debugCard!, const SizedBox(height: 16)],
         Card(
           child: Padding(
@@ -1129,4 +1151,177 @@ class _ComparisonTable extends StatelessWidget {
   }
 
   String _ms(int? value) => value == null ? '—' : '$value ms';
+}
+
+/// 客户端 TTFT 评测入口：问题集经问答真实链路逐条执行
+///
+/// TTFT 口径为点击发送到首帧渲染（遥测三时间戳），数据落
+/// client_metrics 表；跑题期间问答页不可同时使用。
+class _ClientTtftCard extends StatefulWidget {
+  const _ClientTtftCard({
+    required this.controller,
+    required this.chatController,
+  });
+
+  final EvaluationController controller;
+  final dynamic chatController;
+
+  @override
+  State<_ClientTtftCard> createState() => _ClientTtftCardState();
+}
+
+class _ClientTtftCardState extends State<_ClientTtftCard> {
+  late final ClientBenchmarkRunner _runner;
+  final _questionsField = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _runner = ClientBenchmarkRunner(
+      harness: ChatGenerationHarness(widget.chatController),
+    );
+  }
+
+  @override
+  void dispose() {
+    _questionsField.dispose();
+    _runner.dispose();
+    super.dispose();
+  }
+
+  void _start() {
+    final kbId = widget.controller.kbFilter;
+    if (kbId == null) return;
+    final questions = [
+      for (final line in _questionsField.value.text.split('\n'))
+        if (line.trim().isNotEmpty) line.trim(),
+    ];
+    if (questions.isEmpty) return;
+    unawaited(_runner.start(questions, kbId: kbId));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final running = _runner.running;
+    final kbSelected = widget.controller.kbFilter != null;
+    final summary = running || _runner.records.isEmpty
+        ? null
+        : _runner.summaryPercentiles();
+    return ListenableBuilder(
+      listenable: _runner,
+      builder: (context, _) {
+        final progress = _runner.running
+            ? '进行中：第 ${_runner.currentIndex + 1} / ${_runner.total} 题'
+            : _runner.records.isEmpty
+                ? null
+                : '已完成 ${_runner.records.length} 题';
+        return Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.speed, size: 18),
+                    const SizedBox(width: 8),
+                    const Text(
+                      '客户端 TTFT 评测',
+                      style: TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                    const Spacer(),
+                    if (running)
+                      FilledButton.tonalIcon(
+                        onPressed: _runner.requestStop,
+                        icon: const Icon(Icons.stop, size: 16),
+                        label: const Text('停止'),
+                      )
+                    else
+                      FilledButton.icon(
+                        onPressed: kbSelected ? _start : null,
+                        icon: const Icon(Icons.play_arrow, size: 16),
+                        label: const Text('开始评测'),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'TTFT 口径：点击发送 → 首帧渲染（每题独立会话经真实问答'
+                  '链路执行）；评测期间请勿在问答页操作。遥测自动落库，'
+                  '事后用 export_evaluations.py 导出明细',
+                  style: TextStyle(fontSize: 12, color: colors.onSurfaceVariant),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _questionsField,
+                  enabled: !running,
+                  minLines: 3,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    labelText: '问题集（每行一个问题）',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                if (progress != null) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      if (running)
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      if (running) const SizedBox(width: 8),
+                      Text(progress,
+                          style: TextStyle(
+                              fontSize: 12, color: colors.onSurfaceVariant)),
+                    ],
+                  ),
+                ],
+                if (_runner.error != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _runner.error!,
+                    style: TextStyle(fontSize: 12, color: colors.error),
+                  ),
+                ],
+                if (summary != null && (summary['samples'] as int) > 0) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '客户端 TTFT（${summary['samples']} 个有效样本）：'
+                    'P50 ${summary['p50']} ms / '
+                    'P95 ${summary['p95']} ms / '
+                    'P99 ${summary['p99']} ms',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+                if (_runner.records.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  ...[
+                    for (final record in _runner.records)
+                      Text(
+                        '${record.question}\n'
+                        '  ${record.state}'
+                        '${record.clientTtftMs != null ? " ${record.clientTtftMs} ms" : ""}'
+                        '${record.detail != null ? "（${record.detail}）" : ""}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: record.state == 'completed'
+                              ? colors.onSurfaceVariant
+                              : colors.error,
+                        ),
+                      ),
+                  ],
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
