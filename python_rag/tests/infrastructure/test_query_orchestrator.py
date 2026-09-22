@@ -383,12 +383,13 @@ def test_candidates_segments_and_usage_recorded(query_env):
     assert second[7] == 1
 
     segments = env.conn.execute(
-        "SELECT retrieval_ms, rerank_ms, prompt_build_ms, model_ttft_ms,"
-        " input_tokens, output_tokens FROM query_runs WHERE id = ?",
+        "SELECT retrieval_ms, resolve_ms, rerank_ms, prompt_build_ms,"
+        " model_ttft_ms, input_tokens, output_tokens FROM query_runs"
+        " WHERE id = ?",
         (run.id,),
     ).fetchone()
-    assert all(value is not None and value >= 0 for value in segments[:4])
-    assert segments[4] == 30 and segments[5] == 20
+    assert all(value is not None and value >= 0 for value in segments[:5])
+    assert segments[5] == 30 and segments[6] == 20
 
 
 def test_purge_expired_tokens_removes_only_expired(query_env):

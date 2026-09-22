@@ -18,8 +18,8 @@ def test_export_writes_jsonl_with_run_candidates_and_citations(tmp_path):
     conn.execute(
         "INSERT INTO query_runs (id, knowledge_base_id, question, state,"
         " refused, rerank_degraded, server_ttft_ms, total_ms, input_tokens,"
-        " output_tokens, created_at)"
-        " VALUES (?, ?, '年假制度', 'completed', 0, 0, 500, 2000, 100, 50, ?)",
+        " output_tokens, created_at, resolve_ms)"
+        " VALUES (?, ?, '年假制度', 'completed', 0, 0, 500, 2000, 100, 50, ?, 7)",
         (run_id, kb_id, FIXED_TIME),
     )
     conn.execute(
@@ -68,6 +68,7 @@ def test_export_writes_jsonl_with_run_candidates_and_citations(tmp_path):
     assert row["server_ttft_ms"] == 500
     assert row["model_ttft_ms"] is None
     assert row["client_ttft_ms"] == 812
+    assert row["resolve_ms"] == 7
     assert row["candidates"] == [
         {
             "chunk_id": None,

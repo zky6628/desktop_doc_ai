@@ -22,7 +22,7 @@ from .schema_helpers import (
 def db(tmp_path):
     """应用全部迁移并开启外键的临时库连接"""
     db_path, applied = fresh_db(tmp_path, name="schema_tasks.db")
-    assert applied == 12
+    assert applied == 13
     conn = connect(db_path)
     yield conn
     conn.close()

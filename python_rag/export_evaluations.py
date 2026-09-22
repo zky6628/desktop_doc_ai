@@ -23,7 +23,8 @@ def _export_rows(conn: sqlite3.Connection):
         "SELECT qr.id, qr.knowledge_base_id, qr.question, qr.state, qr.refused,"
         " qr.rerank_degraded, qr.retrieval_ms, qr.rerank_ms, qr.prompt_build_ms,"
         " qr.model_ttft_ms, qr.server_ttft_ms, qr.total_ms, qr.input_tokens,"
-        " qr.output_tokens, qr.error_code, qr.created_at, qcm.client_ttft_ms"
+        " qr.output_tokens, qr.error_code, qr.created_at, qcm.client_ttft_ms,"
+        " qr.resolve_ms"
         " FROM query_runs qr"
         " LEFT JOIN query_client_metrics qcm ON qcm.query_run_id = qr.id"
         " ORDER BY qr.created_at, qr.id"
@@ -69,6 +70,7 @@ def _export_rows(conn: sqlite3.Connection):
             "error_code": run[14],
             "created_at": run[15],
             "client_ttft_ms": run[16],
+            "resolve_ms": run[17],
             "chunking_config": _chunking_config_for_run(
                 conn, run[0], chunking_config_cache
             ),

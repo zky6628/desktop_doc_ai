@@ -33,6 +33,9 @@ SEGMENT_TARGETS_MS = {
     "model_ttft_ms": 3200,
 }
 
+# 无官方目标线的观察段：只报 P95 供瓶颈定位，不做达标判定
+OBSERVED_SEGMENTS = ("resolve_ms",)
+
 # 检索质量评定的候选排序依据：重排可用用重排名次，降级退 RRF 名次
 def _candidate_rank(candidate: dict) -> int | None:
     return candidate.get("rerank_rank") or candidate.get("rrf_rank")
@@ -83,6 +86,15 @@ def segment_report(export_rows: list[dict]) -> dict:
             "target_ms": target,
             "p95_ms": p95,
             "meets_target": p95 is not None and p95 <= target,
+        }
+    for field in OBSERVED_SEGMENTS:
+        values = [
+            row[field] for row in succeeded if row.get(field) is not None
+        ]
+        segments[field] = {
+            "target_ms": None,
+            "p95_ms": _percentile(values, 0.95),
+            "meets_target": None,
         }
     return segments
 

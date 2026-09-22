@@ -533,6 +533,7 @@ class QueryRunRepository(ABC):
         run_id: str,
         *,
         retrieval_ms: int,
+        resolve_ms: int,
         rerank_ms: int,
         prompt_build_ms: int,
         model_ttft_ms: int,

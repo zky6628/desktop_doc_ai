@@ -208,6 +208,7 @@ class SQLiteQueryRunRepository(QueryRunRepositoryPort):
         run_id: str,
         *,
         retrieval_ms: int,
+        resolve_ms: int,
         rerank_ms: int,
         prompt_build_ms: int,
         model_ttft_ms: int,
@@ -219,12 +220,12 @@ class SQLiteQueryRunRepository(QueryRunRepositoryPort):
         def _record(conn) -> None:
             self._require(conn, run_id)
             conn.execute(
-                "UPDATE query_runs SET retrieval_ms = ?, rerank_ms = ?,"
-                " prompt_build_ms = ?, model_ttft_ms = ?, input_tokens = ?,"
-                " output_tokens = ? WHERE id = ?",
+                "UPDATE query_runs SET retrieval_ms = ?, resolve_ms = ?,"
+                " rerank_ms = ?, prompt_build_ms = ?, model_ttft_ms = ?,"
+                " input_tokens = ?, output_tokens = ? WHERE id = ?",
                 (
-                    retrieval_ms, rerank_ms, prompt_build_ms, model_ttft_ms,
-                    input_tokens, output_tokens, run_id,
+                    retrieval_ms, resolve_ms, rerank_ms, prompt_build_ms,
+                    model_ttft_ms, input_tokens, output_tokens, run_id,
                 ),
             )
 

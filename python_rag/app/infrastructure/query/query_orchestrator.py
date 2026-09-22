@@ -206,6 +206,9 @@ class QueryOrchestrator:
                 )
                 return
 
+            # 事实解析段：切片事实读取与候选文本组装（重排输入准备），
+            # 单独计时使全量切片读取在大知识库下的延迟可见
+            resolve_started = self._clock()
             sources = self._resolver.resolve(kb_id)
             sources_by_id = {source.chunk_id: source for source in sources}
             candidate_texts = [
@@ -213,6 +216,7 @@ class QueryOrchestrator:
                 for candidate in result.candidates
                 if candidate.chunk_id in sources_by_id
             ]
+            resolve_ms = int((self._clock() - resolve_started) * 1000)
             rerank_started = self._clock()
             ranking = rank_with_rerank(
                 self._rerank_gateway, question, result.candidates, candidate_texts
@@ -294,6 +298,7 @@ class QueryOrchestrator:
             self._run_repo.record_segments(
                 run_id,
                 retrieval_ms=retrieval_ms,
+                resolve_ms=resolve_ms,
                 rerank_ms=rerank_ms,
                 prompt_build_ms=prompt_build_ms,
                 model_ttft_ms=model_ttft_ms,
