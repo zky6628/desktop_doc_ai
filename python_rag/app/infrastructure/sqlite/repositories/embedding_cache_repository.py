@@ -24,7 +24,7 @@ class SQLiteEmbeddingCacheRepository(EmbeddingCacheRepositoryPort):
         self._conn = conn
 
     def get_many(
-        self, model_name: str, content_hashes: Sequence[str]
+        self, model_name: str, text_type: str, content_hashes: Sequence[str]
     ) -> dict[str, list[float]]:
         if not content_hashes:
             return {}
@@ -32,8 +32,9 @@ class SQLiteEmbeddingCacheRepository(EmbeddingCacheRepositoryPort):
         placeholders = ",".join("?" * len(unique))
         rows = self._conn.execute(
             "SELECT content_hash, vector, dimensions FROM embedding_cache"
-            f" WHERE model_name = ? AND content_hash IN ({placeholders})",
-            (model_name, *unique),
+            " WHERE model_name = ? AND text_type = ?"
+            f" AND content_hash IN ({placeholders})",
+            (model_name, text_type, *unique),
         ).fetchall()
         hits: dict[str, list[float]] = {}
         for content_hash, blob, dimensions in rows:
@@ -46,6 +47,7 @@ class SQLiteEmbeddingCacheRepository(EmbeddingCacheRepositoryPort):
     def put_many(
         self,
         model_name: str,
+        text_type: str,
         dimensions: int,
         entries: Sequence[tuple[str, list[float]]],
     ) -> None:
@@ -53,12 +55,13 @@ class SQLiteEmbeddingCacheRepository(EmbeddingCacheRepositoryPort):
             return
         self._conn.executemany(
             "INSERT INTO embedding_cache"
-            " (model_name, content_hash, vector, dimensions, created_at)"
-            " VALUES (?, ?, ?, ?, ?)"
-            " ON CONFLICT(model_name, content_hash) DO NOTHING",
+            " (model_name, text_type, content_hash, vector, dimensions, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(model_name, text_type, content_hash) DO NOTHING",
             [
                 (
                     model_name,
+                    text_type,
                     content_hash,
                     _pack_vector(vector),
                     dimensions,

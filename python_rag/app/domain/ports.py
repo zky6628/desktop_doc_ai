@@ -344,11 +344,11 @@ class EvaluationRunRepository(ABC):
 
 
 class EmbeddingCacheRepository(ABC):
-    """嵌入缓存仓储：模型 + 切片内容哈希维度的向量复用"""
+    """嵌入缓存仓储：模型 + 文本侧别 + 内容哈希维度的向量复用"""
 
     @abstractmethod
     def get_many(
-        self, model_name: str, content_hashes: Sequence[str]
+        self, model_name: str, text_type: str, content_hashes: Sequence[str]
     ) -> dict[str, list[float]]:
         """批量读取缓存向量，返回命中项的 hash → 向量映射"""
 
@@ -356,6 +356,7 @@ class EmbeddingCacheRepository(ABC):
     def put_many(
         self,
         model_name: str,
+        text_type: str,
         dimensions: int,
         entries: Sequence[tuple[str, list[float]]],
     ) -> None:

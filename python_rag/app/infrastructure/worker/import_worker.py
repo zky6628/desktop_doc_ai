@@ -998,7 +998,9 @@ class ImportTaskWorker:
         未命中处理（损坏行不信任，重新嵌入即自愈）
         """
         hashes = [stored.chunk.content_hash for stored in batch]
-        cached = self._embedding_cache.get_many(embedding.EMBEDDING_MODEL, hashes)
+        cached = self._embedding_cache.get_many(
+            embedding.EMBEDDING_MODEL, embedding.EMBEDDING_TEXT_TYPE, hashes
+        )
         missing = [
             (stored.chunk.content_hash, stored.chunk.content)
             for stored in batch
@@ -1012,6 +1014,7 @@ class ImportTaskWorker:
         if fresh:
             self._embedding_cache.put_many(
                 embedding.EMBEDDING_MODEL,
+                embedding.EMBEDDING_TEXT_TYPE,
                 len(fresh[0]),
                 [(content_hash, vector) for (content_hash, _), vector in zip(missing, fresh)],
             )

@@ -201,11 +201,18 @@ from app.api.v1 import (
     create_api_router,
 )
 from app.domain.ids import uuid7
-from app.infrastructure.embedding import DashScopeEmbeddingGateway
+from app.infrastructure.embedding import (
+    CachingQueryEmbedder,
+    DashScopeEmbeddingGateway,
+)
 from app.infrastructure.evaluation import EvaluationRunService
 from app.infrastructure.generation import DashScopeGenerationGateway
 from app.infrastructure.ingest import ImportOrchestrator
-from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
+from app.infrastructure.keywordindex import (
+    JiebaTokenizer,
+    SQLiteFtsKeywordIndex,
+    load_jieba_userdict,
+)
 from app.infrastructure.mineru import MinerUClient
 from app.infrastructure.query import QueryOrchestrator
 from app.infrastructure.rerank import DashScopeRerankGateway
@@ -707,6 +714,17 @@ WORKBENCH_LOCAL_DEBUG = (
     in ("1", "true", "on")
 )
 
+# jieba 领域词典（可选）：把知识库专业术语注册为整词，修复默认词典
+# 的领域词碎片化；文件缺失或无在役词条即使用默认词典。加载在启动
+# 早期完成，查询预热与索引构建（Worker）的首次分词都在其后
+_userdict_path = (
+    os.getenv("WORKBENCH_JIEBA_USER_DICT")
+    or os.path.join(BASE_DIR, "data", "jieba_userdict.txt")
+)
+_userdict_words = load_jieba_userdict(_userdict_path)
+if _userdict_words:
+    logger.info(f"jieba 领域词典已加载 {_userdict_words} 个词条")
+
 os.makedirs(os.path.dirname(WORKBENCH_DB_PATH), exist_ok=True)
 
 # 启动时应用数据库迁移（幂等，可重复执行），再建立连接与仓储
@@ -727,21 +745,34 @@ _query_citation_repo = SQLiteCitationRepository(_workbench_conn)
 _query_config_repo = SQLiteConfigRepository(_workbench_conn)
 _query_kb_repo = SQLiteKnowledgeBaseRepository(_workbench_conn)
 _query_dashscope_key = os.getenv("DASHSCOPE_API_KEY") or ""
+# 查询侧向量化网关：真实网关供启动连接预热直连使用；检索服务用
+# 缓存装饰后的实例（模型 + 查询侧别 + 问题哈希为键），评测编排同
+# 问题集多参数组执行与线上重复提问直接复用向量
+_real_query_embedder = (
+    DashScopeEmbeddingGateway(api_key=_query_dashscope_key)
+    if _query_dashscope_key
+    else None
+)
+_query_embedder = (
+    CachingQueryEmbedder(
+        gateway=_real_query_embedder,
+        cache=SQLiteEmbeddingCacheRepository(_workbench_conn),
+    )
+    if _real_query_embedder is not None
+    else None
+)
 # 检索服务与事实解析器为查询链路与调试检索共享的单例（同一实例保证
 # 调试观察到的检索行为与生产一致）
+_text_tokenizer = JiebaTokenizer()
 _retrieval_service = RetrievalService(
     index_repo=SQLiteIndexVersionRepository(_workbench_conn),
     chunk_repo=SQLiteChunkRepository(_workbench_conn),
-    query_embedder=(
-        DashScopeEmbeddingGateway(api_key=_query_dashscope_key)
-        if _query_dashscope_key
-        else None
-    ),
+    query_embedder=_query_embedder,
     vector_index=ChromaVectorIndexAdapter(
         chromadb.PersistentClient(path=WORKBENCH_CHROMA_DIR)
     ),
     keyword_index=SQLiteFtsKeywordIndex(_workbench_conn),
-    tokenizer=JiebaTokenizer(),
+    tokenizer=_text_tokenizer,
 )
 _context_resolver = ContextResolver(
     index_repo=SQLiteIndexVersionRepository(_workbench_conn),
@@ -780,6 +811,37 @@ try:
         print(f"[workbench] 恢复：{_interrupted} 个中断查询已置为失败")
 except Exception as _recover_error:  # noqa: BLE001 - 恢复失败不阻断启动
     print(f"[workbench] 查询恢复失败: {type(_recover_error).__name__}")
+
+
+# 查询路径预热：冷启动首题需支付两笔一次性成本——DashScope 的
+# DNS/TCP/TLS 建连（实测约 0.7s）与 jieba 词典惰性加载（实测约
+# 0.7s），直接计入首题检索段。后台线程经查询侧网关与分词器单例各
+# 发一笔最小调用完成预热；无凭据时仍预热本地分词器，预热失败仅
+# 记录（首题退化为普通冷启动延迟，查询链路本身不受影响）
+def _start_query_warmup() -> None:
+    def _run() -> None:
+        started = time.monotonic()
+        try:
+            _text_tokenizer.tokenize(["预热"])
+            # 连接预热绕过查询缓存直连真实网关：缓存命中不发起网络
+            # 请求，预热就失去建连意义
+            if _real_query_embedder is not None:
+                _real_query_embedder.embed_query("预热")
+        except Exception as exc:  # noqa: BLE001 - 预热失败不阻断启动
+            logger.warning(
+                f"查询路径预热失败: {type(exc).__name__}"
+                "（首题将支付冷启动成本）"
+            )
+            return
+        logger.info(
+            "查询路径预热完成，"
+            f"耗时 {int((time.monotonic() - started) * 1000)}ms"
+        )
+
+    threading.Thread(target=_run, daemon=True, name="query-warmup").start()
+
+
+_start_query_warmup()
 
 
 # ===================== 评测编排桥接 =====================

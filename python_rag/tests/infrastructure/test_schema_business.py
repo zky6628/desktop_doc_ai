@@ -31,7 +31,7 @@ from .schema_helpers import (
 def _fresh_db(tmp_path):
     """创建应用过全部迁移的临时库（测试辅助）"""
     db_path, applied = fresh_db(tmp_path, name="schema_business.db")
-    assert applied == 13
+    assert applied == 14
     return db_path
 
 
@@ -70,7 +70,7 @@ def test_migrations_apply_in_order(tmp_path):
         versions = [r[0] for r in conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         )]
-        assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        assert versions == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     finally:
         conn.close()
 
@@ -92,7 +92,7 @@ def test_upgrade_from_legacy_schema(tmp_path):
     finally:
         conn.close()
 
-    assert apply_migrations(db_path, _DEFAULT_MIGRATIONS_DIR) == 13
+    assert apply_migrations(db_path, _DEFAULT_MIGRATIONS_DIR) == 14
 
 
 def test_kb_active_name_unique_and_soft_delete_reuse(tmp_path):
