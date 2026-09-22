@@ -9,13 +9,13 @@
 from app.domain.parsing import canonical_json
 
 # Embedding 配置版本：模型/维度/批量语义变化时必须递增
-EMBEDDING_CONFIG_VERSION = "1"
+EMBEDDING_CONFIG_VERSION = "2"
 
 # 配置类型取值：与流水线配置表的 config_type 口径一致
 EMBEDDING_CONFIG_TYPE = "embedding"
 
 # 文档侧向量模型与维度：维度决定向量索引形态，变更即新配置版本
-EMBEDDING_MODEL = "text-embedding-v4"
+EMBEDDING_MODEL = "qwen3.7-text-embedding"
 EMBEDDING_DIMENSIONS = 1024
 
 # 单次请求文本数上限（供应方批量接口约束）

@@ -14,9 +14,10 @@ from app.domain.generation import generation_config_json
 
 def test_frozen_generation_contract():
     """生成模型/输出上限/降级策略为冻结合同"""
-    assert generation.GENERATION_MODEL == "qwen-plus"
+    assert generation.GENERATION_MODEL == "qwen3.8-max"
     assert generation.GENERATION_MAX_OUTPUT_TOKENS == 2000
     payload = json.loads(generation_config_json())
+    assert payload["enable_thinking"] is False
     assert payload["rerank_degradation_policy"] == "rrf_top5"
     assert payload["rerank_inline_retries"] == 1
     assert generation_config_json() == generation_config_json()

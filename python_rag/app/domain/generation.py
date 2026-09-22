@@ -9,14 +9,17 @@
 from app.domain.parsing import canonical_json
 
 # 生成配置版本：模型/输出上限/超时语义变化时必须递增
-GENERATION_CONFIG_VERSION = "1"
+GENERATION_CONFIG_VERSION = "2"
 
 # 配置类型取值：与流水线配置表的 config_type 口径一致
 GENERATION_CONFIG_TYPE = "generation"
 
-# 生成模型与输出 token 上限（上下文预算的输出预留同源）
-GENERATION_MODEL = "qwen-plus"
+# 生成模型与输出 token 上限（上下文预算的输出预留同源）。
+# enable_thinking 关闭：思考型模型的推理增量占用输出预算并拖慢首
+# token，引用问答场景作为冻结口径在网关侧关闭并随配置行登记
+GENERATION_MODEL = "qwen3.8-max"
 GENERATION_MAX_OUTPUT_TOKENS = 2000
+GENERATION_ENABLE_THINKING = False
 
 # 单次流式请求超时（秒）：约束整条流的吞吐下限（约 16.7 token/秒），
 # 病态慢生成被切断进失败终态
@@ -36,6 +39,7 @@ def generation_config_json() -> str:
             "generation_config_version": GENERATION_CONFIG_VERSION,
             "model": GENERATION_MODEL,
             "max_output_tokens": GENERATION_MAX_OUTPUT_TOKENS,
+            "enable_thinking": GENERATION_ENABLE_THINKING,
             "request_timeout_seconds": GENERATION_TIMEOUT_SECONDS,
             "rerank_degradation_policy": "rrf_top5",
             "rerank_inline_retries": RERANK_INLINE_RETRIES,

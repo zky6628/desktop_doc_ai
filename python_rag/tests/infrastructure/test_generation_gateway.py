@@ -14,6 +14,15 @@ from app.domain.errors import (
 from app.infrastructure.generation import DashScopeGenerationGateway
 
 
+class FakeHTTPError(Exception):
+    """模拟 openai SDK 的 HTTP 状态错误（携带状态码与响应体）"""
+
+    def __init__(self, status_code: int, body) -> None:
+        super().__init__("http error")
+        self.status_code = status_code
+        self.body = body
+
+
 class RecordingInvoker:
     """返回预置响应序列的替身（校验注入参数）"""
 
@@ -28,10 +37,15 @@ class RecordingInvoker:
 
 def _delta(text: str) -> SimpleNamespace:
     return SimpleNamespace(
-        status_code=200,
-        output=SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
-        ),
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=text))]
+    )
+
+
+def _usage_chunk(prompt_tokens: int, completion_tokens: int) -> SimpleNamespace:
+    """用量专用收尾块（无 choices）"""
+    return SimpleNamespace(
+        choices=[],
+        usage=SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
     )
 
 
@@ -57,15 +71,28 @@ def test_stream_answer_passes_config_to_supplier():
     list(gateway.stream_answer([{"role": "user", "content": "问题"}]))
 
     model, messages, max_tokens, timeout = invoker.calls[0]
-    assert model == "qwen-plus"
+    assert model == "qwen3.8-max"
     assert messages == [{"role": "user", "content": "问题"}]
     assert max_tokens == 99
     assert timeout == 7
 
 
-def test_empty_delta_skipped_and_missing_choices_rejected():
-    """空增量跳过；choices 缺失按协议违规拒绝"""
-    broken = SimpleNamespace(status_code=200, output=SimpleNamespace(choices=[]))
+def test_usage_chunk_captured_and_empty_choices_skipped():
+    """用量收尾块（无 choices）跳过不产出文本，末次用量随流捕获"""
+    gateway = DashScopeGenerationGateway(
+        api_key="sk-test",
+        invoker=RecordingInvoker([_delta("答案"), _usage_chunk(64, 39)]),
+    )
+
+    text = "".join(gateway.stream_answer([{"role": "user", "content": "问题"}]))
+
+    assert text == "答案"
+    assert gateway.last_usage == (64, 39)
+
+
+def test_missing_choices_shape_rejected():
+    """choices 形状缺失按协议违规拒绝"""
+    broken = SimpleNamespace(choices=None)
     gateway = DashScopeGenerationGateway(
         api_key="sk-test", invoker=RecordingInvoker([broken])
     )
@@ -75,7 +102,7 @@ def test_empty_delta_skipped_and_missing_choices_rejected():
 
 
 def test_transport_exception_is_transient():
-    """调用抛异常统一归瞬态，消息只含异常类型名"""
+    """连接层异常统一归瞬态，消息只含异常类型名"""
     gateway = DashScopeGenerationGateway(
         api_key="sk-test",
         invoker=lambda *args: (_ for _ in ()).throw(ConnectionError("reset")),
@@ -93,16 +120,17 @@ def test_transport_exception_is_transient():
         ("Throttling", GenerationRateLimitedError),
         ("SystemFlowControl", GenerationRateLimitedError),
         ("Arrearage", GenerationQuotaError),
+        ("AllocationQuota.FreeTierOnly", GenerationQuotaError),
         ("InvalidApiKey", GenerationAuthError),
         ("Unknown.Code", GenerationProtocolViolationError),
     ],
 )
 def test_business_code_error_mapping(code, expected):
-    """业务错误码映射：限流族单列为查询合同错误码"""
+    """携带状态码的 HTTP 错误按响应体业务码映射：限流族单列为查询合同错误码"""
     gateway = DashScopeGenerationGateway(
         api_key="sk-test",
-        invoker=lambda *args: iter(
-            [SimpleNamespace(status_code=400, output=None, code=code, message="错误")]
+        invoker=lambda *args: (_ for _ in ()).throw(
+            FakeHTTPError(400, {"error": {"code": code, "message": "错误"}})
         ),
     )
 
@@ -110,19 +138,23 @@ def test_business_code_error_mapping(code, expected):
         list(gateway.stream_answer([{"role": "user", "content": "问题"}]))
 
 
+def test_status_without_body_code_falls_back_to_status_family():
+    """无业务码时按 HTTP 状态分层（401 归认证）"""
+    gateway = DashScopeGenerationGateway(
+        api_key="sk-test",
+        invoker=lambda *args: (_ for _ in ()).throw(FakeHTTPError(401, None)),
+    )
+
+    with pytest.raises(GenerationAuthError):
+        list(gateway.stream_answer([{"role": "user", "content": "问题"}]))
+
+
 def test_error_message_never_contains_api_key():
     """错误消息不携带密钥"""
     gateway = DashScopeGenerationGateway(
         api_key="sk-secret-key-value",
-        invoker=lambda *args: iter(
-            [
-                SimpleNamespace(
-                    status_code=400,
-                    output=None,
-                    code="InvalidApiKey",
-                    message="密钥无效",
-                )
-            ]
+        invoker=lambda *args: (_ for _ in ()).throw(
+            FakeHTTPError(400, {"error": {"code": "InvalidApiKey", "message": "密钥无效"}})
         ),
     )
 
