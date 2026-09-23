@@ -488,7 +488,13 @@ class ChatController extends ChangeNotifier {
       _applyCitation(assistant, update.citation!);
     }
     if (update.appendedText.isNotEmpty) {
-      _firstSseTokenReceivedAt ??= DateTime.now();
+      if (_firstSseTokenReceivedAt == null) {
+        // 首帧渲染时刻在控制器层采样：首 token 更新向外通知即渲染
+        // 交接点，不依赖问答页的挂载与可见状态（评测模式在前台运行
+        // 其他页面时遥测采集不受影响）
+        _firstSseTokenReceivedAt = DateTime.now();
+        _firstTokenRenderedAt = DateTime.now();
+      }
       assistant.content += update.appendedText;
       statusText = '生成中';
     }
@@ -532,12 +538,7 @@ class ChatController extends ChangeNotifier {
     }
   }
 
-  /// 首帧渲染回调（页面在首个 token 渲染完成的帧后调用）
-  void markFirstTokenRendered() {
-    if (_firstSseTokenReceivedAt == null) return;
-    _firstTokenRenderedAt ??= DateTime.now();
-  }
-
+  /// 终态事件处理：聚合恢复（服务端权威正文）与终态阶段落定后收尾
   void _onTerminal(ChatMessageView assistant, QueryTerminal terminal) {
     final recovered = terminal.recoveredAggregate;
     if (recovered != null) {

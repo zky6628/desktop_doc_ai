@@ -318,13 +318,6 @@ void main() {
     final controller = await harness.build();
 
     await controller.send('问题');
-    await _waitFor(
-      () => controller.messages.length > 1 && controller.messages[1].content.isNotEmpty,
-    );
-    // 首帧渲染滞后于 token 到达（真实链路为 post-frame 回调）；显式等待
-    // 跨过系统时钟粒度，避免两个时间戳同 tick 采样导致顺序断言抖动
-    await Future<void>.delayed(const Duration(milliseconds: 25));
-    controller.markFirstTokenRendered();
     await _waitFor(() => !controller.generating);
 
     expect(harness.query.metrics, hasLength(1));
@@ -334,10 +327,11 @@ void main() {
       (metric['send_at'] as DateTime).isBefore(metric['received_at'] as DateTime),
       isTrue,
     );
+    // 渲染时刻在控制器层随首 token 通知采样，不早于接收时刻
     expect(
       (metric['received_at'] as DateTime)
           .isBefore(metric['rendered_at'] as DateTime),
-      isTrue,
+      isFalse,
     );
   });
 

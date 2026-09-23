@@ -43,8 +43,6 @@ class _ChatPageState extends State<ChatPage> {
   int? _highlightOrder;
   final Map<String, GlobalKey> _citationKeys = {};
 
-  // 首 token 渲染采样：按流式占位消息记录，避免重复回填
-  String? _renderMarkedForId;
   String? _lastErrorText;
 
   @override
@@ -114,23 +112,12 @@ class _ChatPageState extends State<ChatPage> {
       _lastErrorText = null;
     }
 
-    // 生成中贴底滚动；首 token 渲染完成后回填遥测时间戳
+    // 生成中贴底滚动（首 token 渲染时刻在控制器层采样，页面无回调职责）
     if (_controller.generating) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_messagesScroll.hasClients) return;
         _messagesScroll.jumpTo(_messagesScroll.position.maxScrollExtent);
       });
-    }
-    for (final message in _controller.messages) {
-      if (message.role == 'assistant' &&
-          message.streaming &&
-          message.content.isNotEmpty &&
-          _renderMarkedForId != message.id) {
-        _renderMarkedForId = message.id;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _controller.markFirstTokenRendered();
-        });
-      }
     }
     setState(() {});
   }
