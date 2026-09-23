@@ -44,6 +44,9 @@ class EvaluationController extends ChangeNotifier {
   /// 进入页面首次加载中
   bool loading = false;
 
+  /// 指标重置执行中（运行概览卡片重置按钮）
+  bool resetting = false;
+
   /// 当前知识库筛选（null 为全部知识库）
   String? kbFilter;
 
@@ -203,6 +206,24 @@ class EvaluationController extends ChangeNotifier {
     await Future.wait([_loadKnowledgeBases(), _loadMetrics(), _loadFeatures()]);
     loading = false;
     notifyListeners();
+  }
+
+  /// 重置查询指标：删除全部失败与取消的运行后刷新聚合（失败污染清除，
+  /// 成功历史与 TTFT/token 聚合保留）
+  Future<void> resetMetrics() async {
+    if (resetting) return;
+    resetting = true;
+    notifyListeners();
+    try {
+      await _query.resetQueryMetrics();
+      await _loadMetrics();
+    } on ApiException catch (exc) {
+      // 重置失败按页面错误态呈现；聚合刷新自身的异常由 _loadMetrics 承接
+      error = exc;
+    } finally {
+      resetting = false;
+      notifyListeners();
+    }
   }
 
   /// 切换知识库筛选（影响指标查询与调试检索目标库）

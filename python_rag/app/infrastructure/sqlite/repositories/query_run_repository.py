@@ -310,6 +310,25 @@ class SQLiteQueryRunRepository(QueryRunRepositoryPort):
 
         return run_in_transaction(self._conn, _fail, "恢复中断查询")
 
+    def delete_failed_runs(self) -> int:
+        """删除全部失败与取消的查询运行（方法契约见领域 Port 定义）"""
+
+        def _delete(conn) -> int:
+            # 引用快照与运行的评测关联无级联外键，删除前解除关联
+            # （快照事实保留，历史会话引用展示不受影响）
+            conn.execute(
+                "UPDATE citations SET query_run_id = NULL"
+                " WHERE query_run_id IN"
+                " (SELECT id FROM query_runs"
+                "  WHERE state IN ('failed', 'cancelled'))"
+            )
+            cursor = conn.execute(
+                "DELETE FROM query_runs WHERE state IN ('failed', 'cancelled')"
+            )
+            return cursor.rowcount
+
+        return run_in_transaction(self._conn, _delete, "重置查询指标")
+
     def _load(self, conn, run_id: str) -> QueryRun:
         row = conn.execute(
             f"SELECT {_RUN_COLUMNS} FROM query_runs WHERE id = ?", (run_id,)

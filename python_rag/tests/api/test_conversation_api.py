@@ -392,3 +392,28 @@ def test_rename_conversation_updates_title_without_touching_recency(runtime):
     )
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "CONVERSATION_NOT_FOUND"
+
+
+def test_delete_all_conversations_keeps_query_metrics(runtime):
+    """清空全部会话：消息与引用级联清除，查询运行行与问题事实保留且关联置空"""
+    env = runtime
+    first = _conversation_with_messages(env, [("user", "问题一"), ("assistant", "回答一")])
+    second = _conversation_with_messages(env, [("user", "问题二"), ("assistant", "回答二")])
+    for conversation_id in (first, second):
+        env.conn.execute(
+            "INSERT INTO query_runs (id, knowledge_base_id, conversation_id,"
+            " question, state, refused, rerank_degraded, created_at)"
+            " VALUES (?, ?, ?, ?, 'completed', 0, 0, ?)",
+            (uuid7(), env.kb_id, conversation_id, "问题", FIXED_TIME),
+        )
+
+    response = env.client.delete("/api/v1/conversations")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["deleted"] == 2
+    assert env.conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 0
+    assert env.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
+    assert env.conn.execute("SELECT COUNT(*) FROM query_runs").fetchone()[0] == 2
+    assert env.conn.execute(
+        "SELECT COUNT(*) FROM query_runs WHERE conversation_id IS NOT NULL"
+    ).fetchone()[0] == 0

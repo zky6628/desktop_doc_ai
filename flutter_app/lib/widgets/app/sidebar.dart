@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../controllers/chat_controller.dart';
 import '../../api/dto/conversation_dto.dart';
 import '../../theme/colors.dart';
+import 'conversation_manage_dialog.dart';
 
 /// 侧边栏：一级导航 + 历史会话列表 + 设置入口（吸底）
 ///
@@ -76,13 +77,26 @@ class WorkbenchSidebar extends StatelessWidget {
             ),
             const Divider(height: 1),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-              child: Text(
-                '历史会话',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+              padding: const EdgeInsets.fromLTRB(16, 2, 8, 0),
+              child: Row(
+                children: [
+                  Text(
+                    '历史会话',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: '批量管理会话',
+                    icon: const Icon(Icons.checklist_rtl, size: 18),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: chat.conversations.isEmpty
+                        ? null
+                        : () => _openManageDialog(context, chat),
+                  ),
+                ],
               ),
             ),
             Expanded(child: _buildConversationList(context, chat, theme)),
@@ -186,6 +200,27 @@ class WorkbenchSidebar extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  Future<void> _openManageDialog(
+    BuildContext context,
+    ChatController chat,
+  ) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => ConversationManageDialog(
+        conversations: List.of(chat.conversations),
+        // 多选删除逐条走既有单删端点，返回实际删除成功的 ID 集合
+        onDeleteSelected: (ids) async {
+          final deleted = <String>{};
+          for (final id in ids) {
+            if (await chat.deleteConversation(id)) deleted.add(id);
+          }
+          return deleted;
+        },
+        onDeleteAll: chat.deleteAllConversations,
+      ),
     );
   }
 

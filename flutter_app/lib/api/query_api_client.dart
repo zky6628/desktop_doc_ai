@@ -85,6 +85,16 @@ class QueryApiClient {
     return QueryMetricsSummary.fromJson(_base.dataOf(response));
   }
 
+  /// 重置查询指标：删除全部失败与取消的运行（失败污染清除），成功
+  /// 历史与 TTFT/token 聚合保留。返回删除的运行数
+  Future<int> resetQueryMetrics() async {
+    final response = await _base.send(
+      (client) => client.delete(_base.uri('/api/v1/metrics/queries')),
+    );
+    final data = _base.dataOf(response);
+    return (data['deleted'] as num).toInt();
+  }
+
   /// 上报客户端遥测（204；幂等，服务端忽略重复上报）
   Future<void> reportClientMetrics({
     required String queryId,

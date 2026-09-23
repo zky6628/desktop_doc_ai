@@ -99,6 +99,11 @@ class FakeQueryApiClient implements QueryApiClient {
   Future<QueryMetricsSummary> queryMetrics({String? knowledgeBaseId}) async {
     throw UnimplementedError('问答页不消费聚合指标');
   }
+
+  @override
+  Future<int> resetQueryMetrics() async {
+    throw UnimplementedError('问答页不重置指标');
+  }
 }
 
 class FakeConversationApiClient implements ConversationApiClient {
@@ -142,6 +147,16 @@ class FakeConversationApiClient implements ConversationApiClient {
   @override
   Future<void> deleteConversation(String conversationId) async {
     deletedIds.add(conversationId);
+  }
+
+  @override
+  Future<int> deleteAllConversations() async {
+    final count = conversations.length;
+    conversations = const [];
+    deletedIds.addAll(
+      messagesByConversation.keys,
+    );
+    return count;
   }
 
   @override

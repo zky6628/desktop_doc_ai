@@ -17,6 +17,7 @@ from app.api.v1 import (
     QueryDependencies,
     create_api_router,
 )
+from app.domain.ids import uuid7
 from app.domain.retrieval import IndexHit
 from app.infrastructure.keywordindex import JiebaTokenizer, SQLiteFtsKeywordIndex
 from app.infrastructure.query import QueryOrchestrator
@@ -34,7 +35,7 @@ from app.infrastructure.sqlite.repositories import (
     SQLiteQueryEventStore,
     SQLiteQueryRunRepository,
 )
-from tests.infrastructure.schema_helpers import fresh_db, insert_kb
+from tests.infrastructure.schema_helpers import FIXED_TIME, fresh_db, insert_kb
 from tests.infrastructure.test_retrieval_service import (
     FixedQueryEmbedder,
     add_active_document,
@@ -419,3 +420,86 @@ def test_query_metrics_aggregates_percentiles_and_failure_rate(runtime):
     assert data["failed"] == 1
     assert data["failure_rate"] == 0.1
     assert data["input_tokens"] == 30 * 9 and data["output_tokens"] == 20 * 9
+
+
+def test_reset_query_metrics_deletes_failed_and_cancelled_only(runtime):
+    """指标重置：失败与取消运行连同事件/候选/遥测级联清除，成功历史
+    与 TTFT/token 聚合保留；引用快照解除评测关联（快照事实保留）"""
+    env = runtime
+    run_repo = SQLiteQueryRunRepository(env.conn)
+    completed = run_repo.create(kb_id=env.kb_id, question="成功题", config_ids={})
+    run_repo.mark_running(completed.id)
+    run_repo.finalize(completed.id, state="completed")
+
+    failed = run_repo.create(kb_id=env.kb_id, question="失败题", config_ids={})
+    run_repo.mark_running(failed.id)
+    run_repo.finalize(
+        failed.id, state="failed", error_code="GENERATION_QUOTA", error_message="配额"
+    )
+    cancelled = run_repo.create(kb_id=env.kb_id, question="取消题", config_ids={})
+    run_repo.mark_running(cancelled.id)
+    run_repo.finalize(cancelled.id, state="cancelled")
+
+    # 失败运行挂引用快照、候选与客户端遥测（验证级联清除与关联解除）
+    conversation_id = uuid7()
+    assistant_message_id = uuid7()
+    env.conn.execute(
+        "INSERT INTO conversations (id, knowledge_base_id, title, created_at,"
+        " updated_at) VALUES (?, ?, NULL, ?, ?)",
+        (conversation_id, env.kb_id, FIXED_TIME, FIXED_TIME),
+    )
+    env.conn.execute(
+        "INSERT INTO messages (id, conversation_id, role, content, created_at)"
+        " VALUES (?, ?, 'assistant', '回答', ?)",
+        (assistant_message_id, conversation_id, FIXED_TIME),
+    )
+    env.conn.execute(
+        "INSERT INTO citations (id, assistant_message_id, citation_order,"
+        " knowledge_base_id_snapshot, quoted_text_snapshot, validation_state,"
+        " created_at, query_run_id) VALUES (?, ?, 1, ?, '引文', 'validated', ?, ?)",
+        (uuid7(), assistant_message_id, env.kb_id, FIXED_TIME, failed.id),
+    )
+    env.conn.execute(
+        "INSERT INTO retrieval_candidates (id, query_run_id, source, rrf_rank,"
+        " rrf_score, in_context, created_at)"
+        " VALUES (?, ?, 'vector', 1, 0.03, 0, ?)",
+        (uuid7(), failed.id, FIXED_TIME),
+    )
+    env.conn.execute(
+        "INSERT INTO query_client_metrics (query_run_id, client_send_at,"
+        " first_sse_token_received_at, first_token_rendered_at, client_ttft_ms,"
+        " reported_at) VALUES (?, ?, ?, ?, 900, ?)",
+        (failed.id, FIXED_TIME, FIXED_TIME, FIXED_TIME, FIXED_TIME),
+    )
+
+    response = env.client.delete("/api/v1/metrics/queries")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["deleted"] == 2
+    assert env.conn.execute(
+        "SELECT COUNT(*) FROM query_runs WHERE state IN ('failed', 'cancelled')"
+    ).fetchone()[0] == 0
+    row = env.conn.execute(
+        "SELECT state, question FROM query_runs WHERE id = ?", (completed.id,)
+    ).fetchone()
+    assert row == ("completed", "成功题")
+    # 引用快照保留但评测关联解除；级联子表清空
+    citation = env.conn.execute(
+        "SELECT query_run_id, quoted_text_snapshot FROM citations"
+        " WHERE query_run_id IS NOT NULL"
+    ).fetchall()
+    assert citation == []
+    assert env.conn.execute(
+        "SELECT quoted_text_snapshot FROM citations"
+        " WHERE quoted_text_snapshot = '引文'"
+    ).fetchone() == ("引文",)
+    assert env.conn.execute(
+        "SELECT COUNT(*) FROM retrieval_candidates"
+    ).fetchone()[0] == 0
+    assert env.conn.execute(
+        "SELECT COUNT(*) FROM query_client_metrics"
+    ).fetchone()[0] == 0
+
+    data = env.client.get("/api/v1/metrics/queries").json()["data"]
+    assert data["total"] == 1 and data["failed"] == 0
+    assert data["failure_rate"] == 0.0

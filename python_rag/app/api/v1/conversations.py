@@ -132,6 +132,16 @@ def create_conversations_router(deps: ConversationDependencies) -> APIRouter:
             status_code=200, content=success_envelope(payload, request_id)
         )
 
+    @router.delete("/conversations")
+    def delete_all_conversations() -> JSONResponse:
+        """清空全部会话（立即生效；消息级联清除，查询指标事实保留）"""
+        request_id = new_request_id()
+        deleted = deps.conversation_repo.delete_all()
+        return JSONResponse(
+            status_code=200,
+            content=success_envelope({"deleted": deleted}, request_id),
+        )
+
     @router.delete("/conversations/{conversation_id}")
     def delete_conversation(conversation_id: str) -> Response:
         """删除会话（立即生效；查询指标事实保留）"""

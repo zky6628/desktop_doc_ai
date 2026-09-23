@@ -571,6 +571,13 @@ class QueryRunRepository(ABC):
         """把重启残留的 queued/running/cancel_requested 查询统一置为
         failed（进程重启中断）；返回处理数量（启动恢复调用，幂等）"""
 
+    @abstractmethod
+    def delete_failed_runs(self) -> int:
+        """删除全部失败与取消的查询运行（指标重置：清除失败污染，
+        成功历史与 TTFT/token 聚合保留）。关联的事件/候选/客户端遥测
+        经级联清除，引用快照解除评测关联（快照事实保留）。返回删除
+        的运行数"""
+
 
 class QueryEventStore(ABC):
     """查询事件仓储：SSE 事件的持久化与断点重放
@@ -665,6 +672,11 @@ class ConversationRepository(ABC):
         """删除会话：消息与引用快照经级联清除，查询运行的会话/消息
         关联列由存储层置空（查询指标事实保留）；会话不存在抛
         EntityNotFoundError"""
+
+    @abstractmethod
+    def delete_all(self) -> int:
+        """清空全部会话：消息与引用快照经级联清除，查询运行的会话/消息
+        关联列由存储层置空（查询指标事实保留）。返回删除的会话数"""
 
 
 class ChunkRepository(ABC):

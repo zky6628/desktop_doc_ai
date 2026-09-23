@@ -337,6 +337,25 @@ class ChatController extends ChangeNotifier {
     return true;
   }
 
+  /// 清空全部会话（API 接受后清空本地列表；当前会话回到草稿态）
+  Future<bool> deleteAllConversations() async {
+    try {
+      await _conversations.deleteAllConversations();
+      actionError = null;
+    } on ApiException catch (exc) {
+      actionError = exc;
+      notifyListeners();
+      return false;
+    }
+    conversations = [];
+    _listCursor = null;
+    hasMoreConversations = false;
+    _resetToDraft();
+    unawaited(_preferences.saveLastConversationId(null));
+    notifyListeners();
+    return true;
+  }
+
   /// 重命名会话（API 接受后才更新本地列表项标题）
   Future<bool> renameConversation(String conversationId, String title) async {
     final trimmed = title.trim();

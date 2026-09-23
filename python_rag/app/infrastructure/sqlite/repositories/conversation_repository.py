@@ -212,6 +212,15 @@ class SQLiteConversationRepository(ConversationRepositoryPort):
             self._conn, _delete, f"删除会话 {conversation_id}"
         )
 
+    def delete_all(self) -> int:
+        """清空全部会话（方法契约见领域 Port 定义）"""
+
+        def _delete_all(conn) -> int:
+            cursor = conn.execute("DELETE FROM conversations")
+            return cursor.rowcount
+
+        return run_in_transaction(self._conn, _delete_all, "清空全部会话")
+
 
 def _excerpt(content: str) -> str:
     """折叠空白后按长度截取摘要（不附加省略号，展示交给客户端）"""

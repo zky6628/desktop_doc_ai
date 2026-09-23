@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from app.domain.ports import QueryRunRepository
+
 from .envelope import new_request_id, success_envelope
 
 # 成功延迟分位的样本条件：completed 且非拒答（拒答无模型 TTFT）
@@ -25,8 +27,8 @@ _SUCCESS_SAMPLE_SQL = (
 class MetricsDependencies:
     """指标端点依赖：由应用装配（或测试）构造"""
 
-    run_repo: object  # QueryRunRepository（SQL 聚合经仓储连接执行）
-    conn: sqlite3.Connection
+    run_repo: QueryRunRepository  # 重置端点经仓储删除失败运行
+    conn: sqlite3.Connection  # SQL 聚合经连接直接执行
 
 
 def create_metrics_router(deps: MetricsDependencies) -> APIRouter:
@@ -96,6 +98,18 @@ def create_metrics_router(deps: MetricsDependencies) -> APIRouter:
         }
         return JSONResponse(
             status_code=200, content=success_envelope(payload, request_id)
+        )
+
+    @router.delete("/metrics/queries")
+    def reset_query_metrics() -> JSONResponse:
+        """重置查询指标：删除全部失败与取消的运行（失败污染清除），
+        成功历史与 TTFT/token 聚合保留；引用快照解除评测关联（快照
+        事实保留）"""
+        request_id = new_request_id()
+        deleted = deps.run_repo.delete_failed_runs()
+        return JSONResponse(
+            status_code=200,
+            content=success_envelope({"deleted": deleted}, request_id),
         )
 
     return router

@@ -74,6 +74,16 @@ class ConversationApiClient {
     }
   }
 
+  /// 清空全部会话（立即生效；消息级联清除，查询指标事实保留）。
+  /// 返回删除的会话数
+  Future<int> deleteAllConversations() async {
+    final response = await _base.send(
+      (client) => client.delete(_base.uri('/api/v1/conversations')),
+    );
+    final data = _base.dataOf(response);
+    return (data['deleted'] as num).toInt();
+  }
+
   /// 重命名会话标题（204；不影响最近活跃排序）
   Future<void> renameConversation(String conversationId, String title) async {
     final response = await _base.send(

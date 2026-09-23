@@ -9,6 +9,7 @@ import '../api/ops_api_client.dart';
 import '../api/query_api_client.dart';
 import '../controllers/client_benchmark_runner.dart';
 import '../controllers/evaluation_controller.dart';
+import '../widgets/knowledge/confirm_dialogs.dart';
 
 /// 评测页（只读）：查询聚合指标、TTFT 分位、token 用量与本地调试检索
 ///
@@ -178,6 +179,7 @@ class _EvaluationPageState extends State<EvaluationPage> {
     }
     return _MetricsView(
       metrics: metrics,
+      controller: controller,
       debugCard: debugCard,
       chunkingCard: chunkingCard,
       evaluationCard: evaluationCard,
@@ -190,6 +192,7 @@ class _EvaluationPageState extends State<EvaluationPage> {
 class _MetricsView extends StatelessWidget {
   const _MetricsView({
     required this.metrics,
+    required this.controller,
     this.debugCard,
     this.chunkingCard,
     this.evaluationCard,
@@ -197,6 +200,9 @@ class _MetricsView extends StatelessWidget {
   });
 
   final QueryMetricsSummary metrics;
+
+  /// 指标重置入口（运行概览卡片按钮；确认后删除失败与取消的运行）
+  final EvaluationController controller;
 
   /// 调试检索卡片（开关开启时由页面传入，置于指标卡之前）
   final Widget? debugCard;
@@ -223,9 +229,31 @@ class _MetricsView extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '运行概览',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                Row(
+                  children: [
+                    const Text(
+                      '运行概览',
+                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                    const Spacer(),
+                    Tooltip(
+                      message: '删除全部失败与取消的查询运行（失败污染清除），'
+                          '成功历史与 TTFT/token 聚合保留',
+                      child: TextButton.icon(
+                        onPressed: controller.resetting
+                            ? null
+                            : () => _confirmReset(context),
+                        icon: controller.resetting
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.restart_alt, size: 16),
+                        label: const Text('重置'),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 12),
                 Wrap(
@@ -301,6 +329,21 @@ class _MetricsView extends StatelessWidget {
     final rate = metrics.failureRate;
     if (rate == null) return '—';
     return '${(rate * 100).toStringAsFixed(1)}%';
+  }
+
+  Future<void> _confirmReset(BuildContext context) async {
+    final confirmed = await showDestructiveConfirmDialog(
+      context,
+      title: '重置运行概览',
+      confirmVerb: '重置',
+      infoLines: [
+        '将删除全部失败与取消的查询运行（含其事件、候选与客户端遥测）。',
+        '成功历史与 TTFT/token 聚合保留。此操作不可恢复。',
+      ],
+    );
+    if (confirmed) {
+      await controller.resetMetrics();
+    }
   }
 
   static String _ms(int? value) => value == null ? '—' : '$value ms';
