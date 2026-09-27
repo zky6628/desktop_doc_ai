@@ -194,7 +194,7 @@ class _ChatPageState extends State<ChatPage> {
       children: [
         if (readOnly) _buildReadOnlyBanner(theme),
         Expanded(child: _buildMessageList(context)),
-        _buildInputArea(theme, readOnly),
+        _buildInputArea(theme, readOnly, kb?.name),
       ],
     );
   }
@@ -297,7 +297,7 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  Widget _buildInputArea(ThemeData theme, bool readOnly) {
+  Widget _buildInputArea(ThemeData theme, bool readOnly, String? kbName) {
     final generating = _controller.generating;
     final statusText = _controller.statusText;
     return Container(
@@ -309,6 +309,33 @@ class _ChatPageState extends State<ChatPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // 提问目标知识库：检索按库隔离，问错库只会得到"没有足够依据"，
+          // 因此在输入区常态显示当前库名，避免误判为解析或检索失败
+          if (kbName != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.library_books_outlined,
+                    size: 13,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      '当前知识库：$kbName',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           if (statusText != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 6),
