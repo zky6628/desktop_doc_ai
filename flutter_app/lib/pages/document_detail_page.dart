@@ -198,9 +198,7 @@ class _DocumentDetailPageState extends State<DocumentDetailPage> {
                       ),
                       const SizedBox(height: 4),
                       SelectableText(
-                        block.table != null
-                            ? block.table!.rawMarkdown
-                            : block.contentText,
+                        _blockPreviewText(block),
                         style: const TextStyle(fontSize: 13),
                       ),
                     ],
@@ -248,6 +246,15 @@ class _DocumentDetailPageState extends State<DocumentDetailPage> {
         title,
         style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
       );
+
+  /// 解析块预览正文：表格块优先用 Markdown 序列化（本地解析器产出），
+  /// 云端解析的表格只提供可检索文本时回退到它——两者皆空才留白
+  static String _blockPreviewText(BlockPreview block) {
+    final table = block.table;
+    if (table == null) return block.contentText;
+    if (table.rawMarkdown.isNotEmpty) return table.rawMarkdown;
+    return table.searchableText;
+  }
 
   Future<void> _replaceFile() async {
     final file = await FilePicker.pickFile();
