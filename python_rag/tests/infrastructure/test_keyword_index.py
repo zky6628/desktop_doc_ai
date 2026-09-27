@@ -163,8 +163,8 @@ class TestSqliteFtsKeywordIndex:
         finally:
             conn.close()
 
-    def test_query_keywords_multi_token_phrase_requires_adjacency(self, tmp_path):
-        """多词元查询构成单短语：短语命中存在时不降级 AND 匹配"""
+    def test_query_keywords_disjunction_ignores_adjacency(self, tmp_path):
+        """析取匹配：任一预分词词元命中即召回，不要求相邻与语序"""
         conn, index = self._fresh(tmp_path)
         try:
             index.rebuild_namespace(
@@ -176,13 +176,13 @@ class TestSqliteFtsKeywordIndex:
             )
             hits = index.query_keywords("fts-a", ["年假", "制度"], top_k=10)
 
-            # c2 同样包含两词元但不相邻；短语级已命中 c1，AND 级不触达
-            assert [hit.chunk_id for hit in hits] == ["c1"]
+            # c2 的两词元不相邻，旧短语级会漏掉它；析取匹配下两者都召回
+            assert {hit.chunk_id for hit in hits} == {"c1", "c2"}
         finally:
             conn.close()
 
-    def test_query_keywords_falls_back_to_all_terms_when_phrase_misses(self, tmp_path):
-        """短语零命中时降级全词元 AND 匹配：语序不同仍可召回"""
+    def test_query_keywords_multi_term_hit_ranks_above_single_term_hit(self, tmp_path):
+        """命中词元数多者排名更高：bm25 的词频权重保留精确措辞的强信号"""
         conn, index = self._fresh(tmp_path)
         try:
             index.rebuild_namespace(
@@ -195,18 +195,19 @@ class TestSqliteFtsKeywordIndex:
             )
             hits = index.query_keywords("fts-a", ["制度", "年假"], top_k=10)
 
-            # 短语级零命中（无相邻序列），AND 级召回两词元齐备的切片：
-            # 词频相同时更短文档 bm25 更优（c1 短于 c2）；仅含单词元的
-            # c3 不出现
-            assert [hit.chunk_id for hit in hits] == ["c1", "c2"]
-            assert hits[0].score > hits[1].score >= 0
+            # 三个切片都至少命中一个词元；仅命中单个词元的 c3 排在最后，
+            # 两词元齐备且更短的 c1 居首
+            assert hits[-1].chunk_id == "c3"
+            assert hits[0].chunk_id == "c1"
+            assert {hit.chunk_id for hit in hits} == {"c1", "c2", "c3"}
+            assert hits[0].score > hits[-1].score >= 0
             for hit in hits:
                 assert hit.score == pytest.approx(-hit.raw_score)
         finally:
             conn.close()
 
-    def test_query_keywords_all_terms_miss_returns_empty(self, tmp_path):
-        """两级均无命中返回空列表"""
+    def test_query_keywords_no_token_in_namespace_returns_empty(self, tmp_path):
+        """所有词元均不在命名空间内时返回空列表"""
         conn, index = self._fresh(tmp_path)
         try:
             index.rebuild_namespace(
@@ -217,7 +218,7 @@ class TestSqliteFtsKeywordIndex:
                 ],
             )
 
-            assert index.query_keywords("fts-a", ["制度", "苹果"], top_k=10) == []
+            assert index.query_keywords("fts-a", ["葡萄", "西瓜"], top_k=10) == []
         finally:
             conn.close()
 

@@ -196,7 +196,7 @@ class TestSearch:
         assert stages["reranked"] == 2
         assert stages["rerank_degraded"] is False
         assert stages["vector_hits"] == 2
-        # 关键词路按预分词短语匹配，仅苹果切片命中
+        # 关键词路按析取匹配召回词元命中的切片：本例仅苹果切片含查询词元
         assert stages["keyword_hits"] == 1
 
     def test_kb_not_found_and_deleted(self, env):
