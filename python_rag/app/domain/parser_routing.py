@@ -35,10 +35,16 @@ class ParserRouteMode(StrEnum):
 
 @dataclass(frozen=True)
 class ParserRouteDecision:
-    """预路由决策及其可追溯依据"""
+    """预路由决策及其可追溯依据
+
+    requires_confirmation 标记"默认决策即指向云端"的情形：用户未明确
+    指定云端时，向云端提交内容前必须先取得确认；用户主动指定云端
+    时不重复请求确认。
+    """
 
     mode: ParserRouteMode
     reason: str
+    requires_confirmation: bool = False
     router_config_version: str = ROUTER_CONFIG_VERSION
 
 
@@ -68,6 +74,16 @@ _DEFAULT_DECISIONS: dict[str, ParserRouteDecision] = {
     ),
 }
 
+# 图片内容：本地解析器不产出图片文本，默认决策即指向云端识别。
+# 图片属用户原始内容且无本地替代路线，提交云端前必须经用户确认
+_IMAGE_EXTENSIONS = ("jpg", "jpeg", "png", "bmp", "webp", "tiff")
+_IMAGE_DECISION = ParserRouteDecision(
+    mode=ParserRouteMode.CLOUD,
+    reason="图片内容需云端识别，提交前需用户确认",
+    requires_confirmation=True,
+)
+_DEFAULT_DECISIONS.update({ext: _IMAGE_DECISION for ext in _IMAGE_EXTENSIONS})
+
 # 用户明确指定云端解析时的决策理由
 _MINERU_PREFERENCE_REASON = "用户明确指定云端解析"
 
@@ -93,6 +109,7 @@ def decide_parser_route(
 
     pref = ParserPreference(preference)
     if pref is ParserPreference.MINERU:
+        # 用户已明确指定云端：无需再确认
         return ParserRouteDecision(
             mode=ParserRouteMode.CLOUD, reason=_MINERU_PREFERENCE_REASON
         )

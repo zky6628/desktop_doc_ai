@@ -27,6 +27,12 @@ _MATRIX_EXPECTATIONS = {
     ("markdown", "mineru"): "cloud",
     ("docx", "mineru"): "cloud",
     ("pdf", "mineru"): "cloud",
+    # 图片没有本地解析路线：auto 即云端，local 服从用户指定
+    ("jpg", "auto"): "cloud",
+    ("png", "auto"): "cloud",
+    ("tiff", "auto"): "cloud",
+    ("jpg", "local"): "local",
+    ("png", "mineru"): "cloud",
 }
 
 
@@ -53,6 +59,21 @@ class TestPreRoute:
     def test_unknown_extension_rejected(self):
         with pytest.raises(UnsupportedFormatError):
             decide_parser_route("exe", "auto")
+
+    def test_image_default_route_requires_confirmation(self):
+        # 图片内容未经确认不外发：默认决策即云端并要求确认
+        decision = decide_parser_route("jpg", ParserPreference.AUTO)
+        assert decision.mode.value == "cloud"
+        assert decision.requires_confirmation
+
+    def test_explicit_cloud_preference_needs_no_confirmation(self):
+        # 用户主动指定云端解析时不再重复要求确认
+        assert not decide_parser_route("png", ParserPreference.MINERU).requires_confirmation
+        assert not decide_parser_route("pdf", ParserPreference.MINERU).requires_confirmation
+
+    def test_local_documents_need_no_route_confirmation(self):
+        # 本地可解析的文档不在提交前要求确认（扫描件信号在解析后复核）
+        assert not decide_parser_route("docx", ParserPreference.AUTO).requires_confirmation
 
     def test_preference_values_contract(self):
         # 用户可见取值与枚举保持一致

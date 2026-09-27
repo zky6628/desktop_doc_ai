@@ -34,6 +34,12 @@ _MAGIC_SCAN_BYTES = 1024
 # PDF 加密字典关键字：出现即视为加密文件，明确不可接受
 _PDF_ENCRYPT_MARKER = b"/Encrypt"
 
+# 同族扩展名别名：类型探测按容器家族归并命名（JPEG 统一报 jpg），
+# 声明的扩展名落在同族别名内即视为一致
+_MAGIC_EXTENSION_ALIASES: dict[str, frozenset[str]] = {
+    "jpeg": frozenset({"jpg"}),
+}
+
 
 @dataclass(frozen=True)
 class StagedFile:
@@ -185,7 +191,11 @@ class UploadStagingStore:
             return
 
         kind = filetype.guess(temp_path)
-        if kind is None or kind.extension != fmt.extension:
+        # 同族扩展名别名：类型探测对 JPEG 统一报 jpg，声明的 .jpeg 属同族
+        accepted = _MAGIC_EXTENSION_ALIASES.get(fmt.extension, frozenset())
+        if kind is None or (
+            kind.extension != fmt.extension and kind.extension not in accepted
+        ):
             raise UnsupportedFormatError(
                 f"文件真实格式与扩展名 .{fmt.extension} 不一致或文件损坏"
             )

@@ -459,6 +459,16 @@ class ImportTaskWorker:
         if stage is None:
             route = _read_route(task.input_json)
             if route.get("mode") == parser_routing.ParserRouteMode.CLOUD.value:
+                if route.get("requires_confirmation", False):
+                    # 默认决策即指向云端（如图片）：用户未明确指定时
+                    # 先在暂存内容上取得确认，避免原始内容未经许可外发
+                    self._task_repo.transition(
+                        task.id,
+                        TaskStatus.WAITING_USER,
+                        stage=TaskStage.ROUTING_PARSER,
+                    )
+                    logger.info("任务转入用户确认 %s", task.id)
+                    return
                 self._run_cloud(task)
             else:
                 self._run_local(task, route)

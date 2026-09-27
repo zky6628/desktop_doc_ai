@@ -4,8 +4,21 @@ import 'package:flutter/material.dart';
 import '../../api/dto/knowledge_dto.dart';
 import '../../api/knowledge_api_client.dart';
 
-/// v1 受支持格式（05 合同 §5.1；与旧链路白名单互不影响）
-const _supportedExtensions = ['.txt', '.md', '.markdown', '.docx', '.pdf'];
+/// 服务端支持的文档格式：本地预检只做粗筛，真实格式由服务端按文件头判定。
+/// 图片没有本地解析路线，服务端会先请求确认再提交云端识别
+const _supportedExtensions = [
+  '.txt',
+  '.md',
+  '.markdown',
+  '.docx',
+  '.pdf',
+  '.jpg',
+  '.jpeg',
+  '.png',
+  '.bmp',
+  '.webp',
+  '.tiff',
+];
 
 String _extensionOf(String fileName) {
   final dotIndex = fileName.lastIndexOf('.');
@@ -136,7 +149,7 @@ class _UploadDialogState extends State<UploadDialog> {
           child: _files.isEmpty
               ? const Padding(
                   padding: EdgeInsets.symmetric(vertical: 24),
-                  child: Center(child: Text('尚未选择文件（支持 txt/md/markdown/docx/pdf）')),
+                  child: Center(child: Text('尚未选择文件（支持 txt/md/markdown/docx/pdf/图片）')),
                 )
               : ListView.builder(
                   shrinkWrap: true,

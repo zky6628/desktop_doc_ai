@@ -247,6 +247,7 @@ def _serialize_route(
         {
             "mode": route.mode.value,
             "reason": route.reason,
+            "requires_confirmation": route.requires_confirmation,
             "router_config_version": route.router_config_version,
             "parser_preference": preference,
         },

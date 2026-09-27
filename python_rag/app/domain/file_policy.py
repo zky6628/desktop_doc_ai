@@ -69,6 +69,32 @@ ALLOWED_FORMATS: dict[str, UploadFormat] = {
             "pdf", "application/pdf", magic_required=True,
             accepted_mime_types=frozenset({"application/pdf"}),
         ),
+        # 图片走云端解析路线：本地解析器不产出图片文本，扫描件与图片
+        # 均由云端识别，因此这些格式的默认路由指向云端并需用户确认
+        UploadFormat(
+            "jpg", "image/jpeg", magic_required=True,
+            accepted_mime_types=frozenset({"image/jpeg"}),
+        ),
+        UploadFormat(
+            "jpeg", "image/jpeg", magic_required=True,
+            accepted_mime_types=frozenset({"image/jpeg"}),
+        ),
+        UploadFormat(
+            "png", "image/png", magic_required=True,
+            accepted_mime_types=frozenset({"image/png"}),
+        ),
+        UploadFormat(
+            "bmp", "image/bmp", magic_required=True,
+            accepted_mime_types=frozenset({"image/bmp", "image/x-ms-bmp"}),
+        ),
+        UploadFormat(
+            "webp", "image/webp", magic_required=True,
+            accepted_mime_types=frozenset({"image/webp"}),
+        ),
+        UploadFormat(
+            "tiff", "image/tiff", magic_required=True,
+            accepted_mime_types=frozenset({"image/tiff"}),
+        ),
     )
 }
 

@@ -36,6 +36,11 @@ def _minimal_docx_bytes() -> bytes:
     return buffer.getvalue()
 
 
+# 最小图片字节：只保留类型探测所需的文件头特征
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\rIHDR" + b"\x00" * 16
+_JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00\x10JFIF\x00" + b"\x00" * 16
+
+
 def test_stage_text_file_records_facts_and_no_temp_residue(store):
     """文本文件暂存：哈希/大小/类型事实完整，临时文件无残留"""
     stager, root = store
@@ -138,6 +143,31 @@ def test_stage_mime_consistency(store):
     assert staged.mime_type == "text/plain"
     staged = stager.stage([b"text"], "a.txt", declared_mime=None)
     assert staged.mime_type == "text/plain"
+
+
+def test_stage_accepts_real_image(store):
+    """真实 PNG（magic 头）通过校验并保留图片扩展名"""
+    stager, _ = store
+    staged = stager.stage([_PNG_BYTES], "截图.png")
+    assert staged.extension == "png"
+    assert staged.mime_type == "image/png"
+    assert os.path.isfile(staged.staging_path)
+
+
+def test_stage_accepts_jpeg_alias_extension(store):
+    """声明 .jpeg：类型探测按家族报 jpg，同族别名视为一致"""
+    stager, _ = store
+    staged = stager.stage([_JPEG_BYTES], "照片.jpeg")
+    assert staged.extension == "jpeg"
+    assert staged.mime_type == "image/jpeg"
+
+
+def test_stage_rejects_forged_image_extension(store):
+    """文本内容伪装成图片被真实格式校验拒绝"""
+    stager, root = store
+    with pytest.raises(UnsupportedFormatError):
+        stager.stage([b"just plain text"], "伪装.png")
+    assert os.listdir(root) == []
 
 
 def test_stage_prechecks_free_disk(store, monkeypatch):
