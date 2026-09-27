@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal
 
 REM Change to script directory to ensure correct working path
@@ -11,28 +12,47 @@ echo.
 
 cd python_rag
 
-REM ========== 1. Check Python ==========
-echo [1/4] Checking Python...
+REM ========== 1. Check Python (3.12+) ==========
+echo [1/5] Checking Python...
 python --version
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
 if errorlevel 1 (
     echo.
-    echo [ERROR] Python not found! Please install Python 3.10 or higher.
+    echo [ERROR] Python 3.12 or higher is required.
     echo Download: https://www.python.org/downloads/
     echo.
     popd
     pause
     exit /b 1
 )
-echo [OK] Python is installed.
+echo [OK] Python version is supported.
 echo.
 
-REM ========== 2. Check .env file ==========
-echo [2/4] Checking .env file...
+REM ========== 2. Check uv ==========
+REM Dependencies are locked in requirements.lock and installed with uv
+echo [2/5] Checking uv...
+uv --version >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo [ERROR] uv not found. Dependencies are installed from requirements.lock via uv.
+    echo Install: https://docs.astral.sh/uv/getting-started/installation/
+    echo.
+    popd
+    pause
+    exit /b 1
+)
+echo [OK] uv is installed.
+echo.
+
+REM ========== 3. Check .env file ==========
+echo [3/5] Checking .env file...
 if not exist ".env" (
     echo .env not found, copying from .env.example...
-    copy ".env.example" ".env"
+    copy ".env.example" ".env" >nul
     echo.
-    echo [WARNING] Please edit python_rag\.env and set your DASHSCOPE_API_KEY!
+    echo [WARNING] Edit python_rag\.env and set DASHSCOPE_API_KEY
+    echo           for embedding / rerank / generation.
+    echo           MINERU_API_TOKEN is only needed for images and scanned PDFs.
     echo Get API key: https://dashscope.console.aliyun.com/
     echo.
 ) else (
@@ -40,18 +60,18 @@ if not exist ".env" (
 )
 echo.
 
-REM ========== 3. Install dependencies ==========
-echo [3/4] Checking dependencies...
-pip show fastapi >nul 2>&1
+REM ========== 4. Check dependencies (locked set) ==========
+echo [4/5] Checking dependencies...
+python -c "import fastapi, chromadb, jieba" >nul 2>&1
 if errorlevel 1 (
-    echo Dependencies not installed. Installing...
+    echo Dependencies missing. Installing from requirements.lock ...
     echo This may take a few minutes...
     echo.
-    pip install -r requirements.txt
+    uv pip install --system -r requirements.lock
     if errorlevel 1 (
         echo.
         echo [ERROR] Failed to install dependencies!
-        echo Please check your network connection and try again.
+        echo Check your network connection and try again.
         echo.
         popd
         pause
@@ -63,8 +83,8 @@ if errorlevel 1 (
 )
 echo.
 
-REM ========== 4. Start server ==========
-echo [4/4] Starting FastAPI server...
+REM ========== 5. Start server ==========
+echo [5/5] Starting FastAPI server...
 echo.
 echo ========================================
 echo   Server URL: http://127.0.0.1:8000
