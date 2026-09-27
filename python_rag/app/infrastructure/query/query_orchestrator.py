@@ -46,6 +46,7 @@ from app.domain.retrieval import (
     CandidateRecord,
     retrieval_config_json,
 )
+from app.infrastructure.model_settings import ModelSettings
 from app.infrastructure.retrieval import (
     ContextResolver,
     RetrievalService,
@@ -89,6 +90,7 @@ class QueryOrchestrator:
         resolver: ContextResolver,
         rerank_gateway: RerankGateway,
         generation_gateway: GenerationGateway,
+        model_settings: ModelSettings | None = None,
         token_flush_interval: float = 0.2,
         token_flush_batch: int = 32,
         token_retention_seconds: int = 1800,
@@ -103,6 +105,8 @@ class QueryOrchestrator:
         self._resolver = resolver
         self._rerank_gateway = rerank_gateway
         self._generation_gateway = generation_gateway
+        # 模型身份随配置行登记：装配期解析结果为准，未注入时取域常量口径
+        self._model_settings = model_settings or ModelSettings.defaults()
         self._token_flush_interval = token_flush_interval
         self._token_flush_batch = token_flush_batch
         self._token_retention_seconds = token_retention_seconds
@@ -124,13 +128,14 @@ class QueryOrchestrator:
                 "retrieval", retrieval_config_json()
             ),
             "rerank": self._config_repo.ensure_config(
-                "rerank", rerank_config_json()
+                "rerank", rerank_config_json(self._model_settings.rerank_model)
             ),
             "context": self._config_repo.ensure_config(
                 "context", context_config_json()
             ),
             "generation": self._config_repo.ensure_config(
-                "generation", generation_config_json()
+                "generation",
+                generation_config_json(self._model_settings.generation_model),
             ),
         }
         run = self._run_repo.create(

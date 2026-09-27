@@ -11,7 +11,7 @@ API 已不可用，按 503 错误信封返回。配置概览只输出无密钥�
 import json
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from fastapi import APIRouter
@@ -50,9 +50,9 @@ _CONFIG_SUMMARY_KEYS = {
     "generation": frozenset({"model", "max_output_tokens"}),
 }
 
-# 当前生效的模型身份（网关装配与域常量同源；模型档案表为后续
+# 缺省模型身份：装配期未注入时按域常量口径输出（模型档案表为后续
 # 多 Profile 预留，当前无写入方，不输出空事实）
-_MODEL_PROFILES = [
+_DEFAULT_MODEL_PROFILES = [
     {"role": "embedding", "provider": "dashscope", "model_name": EMBEDDING_MODEL},
     {"role": "rerank", "provider": "dashscope", "model_name": RERANK_MODEL},
     {"role": "generation", "provider": "dashscope", "model_name": GENERATION_MODEL},
@@ -75,6 +75,10 @@ class OpsDependencies:
     dashscope_configured: bool
     local_debug_enabled: bool
     settings_repo: SystemSettingsRepository
+    # 当前生效的模型身份：由装配期解析结果注入，缺省取域常量口径
+    model_profiles: list[dict[str, str]] = field(
+        default_factory=lambda: list(_DEFAULT_MODEL_PROFILES)
+    )
 
 
 class ChunkingConfigBody(BaseModel):
@@ -189,7 +193,7 @@ def create_ops_router(deps: OpsDependencies) -> APIRouter:
                 }
             )
         payload = {
-            "model_profiles": _MODEL_PROFILES,
+            "model_profiles": deps.model_profiles,
             "pipeline_configs": summaries,
             "limits": {
                 "max_running": task_state.MAX_RUNNING,

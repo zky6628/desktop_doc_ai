@@ -45,7 +45,6 @@ app.*.map.json
 /android/app/release
 flutter_app/.vscode/launch.json
 python_rag/.env
-python_rag/chroma_db/
 python_rag/uploads/
 python_rag/data/
 .vscode/launch.json

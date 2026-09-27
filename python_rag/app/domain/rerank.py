@@ -25,15 +25,16 @@ RERANK_TOP_N = 5
 RERANK_TIMEOUT_SECONDS = 3
 
 
-def rerank_config_json() -> str:
+def rerank_config_json(model: str | None = None) -> str:
     """产出当前重排参数集的规范 JSON（配置行的内容与哈希来源）
 
+    :param model: 装配期解析的重排模型名（缺省取域常量口径）
     :return: 键排序、紧凑分隔的配置 JSON 文本
     """
     return canonical_json(
         {
             "rerank_config_version": RERANK_CONFIG_VERSION,
-            "model": RERANK_MODEL,
+            "model": model or RERANK_MODEL,
             "top_n": RERANK_TOP_N,
             "max_input_candidates": retrieval.FUSED_TOP_K,
             "request_timeout_seconds": RERANK_TIMEOUT_SECONDS,

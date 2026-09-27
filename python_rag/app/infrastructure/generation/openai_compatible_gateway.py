@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-"""DashScope 生成适配器：OpenAI 兼容端点流式调用与错误分类
+"""OpenAI 兼容生成适配器：流式调用与错误分类
 
-供应方新版生成模型经 OpenAI 兼容端点服务（原生端点不承载），网关以
+生成模型经 OpenAI 兼容端点服务：云端供应方以其兼容端点承载新版生成
+模型，本地推理服务（如 Ollama）同样暴露兼容端点，因此同一适配器通过
+base_url 与厂商开关参数切换，不为每家供应商重复实现流式解析。网关以
 openai SDK 流式调用并逐段产出增量文本；思考型模型的推理增量与回答
-增量分离，网关关闭思考（引用问答场景思考会占用输出预算并拖慢首
-token）。响应结构按协议校验：choices 缺失即协议违规，角色增量与空
-增量跳过，末次用量（含 usage 专用收尾块）随流捕获。错误分类边界与
-向量化/重排网关一致：连接层失败归瞬态，携带状态码的 HTTP 错误按业
-务码映射（限流族单列为查询合同错误码），认证/配额归服务端配置问题，
-未知状态按协议违规。客户端在构造时建立（连接池跨查询复用），请求
-超时经 request_timeout 注入。密钥只经构造器注入，不进入日志与错误
-消息。
+增量分离，是否关闭思考由配置决定（引用问答场景思考会占用输出预算并
+拖慢首 token），不支持该开关的兼容端点应传 None 以省略该字段。响应
+结构按协议校验：choices 缺失即协议违规，角色增量与空增量跳过，末次
+用量（含 usage 专用收尾块）随流捕获。错误分类边界与向量化/重排网关
+一致：连接层失败归瞬态，携带状态码的 HTTP 错误按业务码映射（限流族
+单列为查询合同错误码），认证/配额归服务端配置问题，未知状态按协议
+违规。客户端在构造时建立（连接池跨查询复用），请求超时经
+request_timeout 注入。密钥只经构造器注入，不进入日志与错误消息。
 """
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any, cast
@@ -31,7 +33,7 @@ from app.domain.ports import GenerationGateway as GenerationGatewayPort
 
 from ..dashscope_support import ErrorFamily, resolve_code_error
 
-# 供应方 OpenAI 兼容端点（原生端点不承载新版生成模型）
+# 供应方云端 OpenAI 兼容端点（原生端点不承载新版生成模型）
 _COMPAT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 # 本网关的领域错误族：限流单列（查询合同独立错误码），其余经共享口径
@@ -43,14 +45,17 @@ _GENERATION_ERROR_FAMILY = ErrorFamily(
 )
 
 
-class DashScopeGenerationGateway(GenerationGatewayPort):
-    """DashScope 流式生成网关（OpenAI 兼容端点）
+class OpenAICompatibleGenerationGateway(GenerationGatewayPort):
+    """OpenAI 兼容端点流式生成网关
 
     :param api_key: API Key（构造器注入，绝不写日志与消息）
     :param invoker: 供应方调用函数（缺省绑定 SDK 客户端，测试注入替身）
     :param model: 生成模型名
     :param max_tokens: 输出 token 上限
     :param request_timeout: 单次流式请求超时（秒，约束流式读取）
+    :param base_url: 兼容端点地址（云端与本地推理服务各自不同）
+    :param enable_thinking: 思考开关；None 表示端点不识别该字段，
+        请求体不携带 extra_body
     """
 
     def __init__(
@@ -62,11 +67,14 @@ class DashScopeGenerationGateway(GenerationGatewayPort):
         model: str = generation.GENERATION_MODEL,
         max_tokens: int = generation.GENERATION_MAX_OUTPUT_TOKENS,
         request_timeout: int = generation.GENERATION_TIMEOUT_SECONDS,
+        base_url: str = _COMPAT_BASE_URL,
+        enable_thinking: bool | None = generation.GENERATION_ENABLE_THINKING,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._max_tokens = max_tokens
         self._request_timeout = request_timeout
+        self._enable_thinking = enable_thinking
         self._last_usage: tuple[int, int] | None = None
         if invoker is not None:
             self._invoke = invoker
@@ -74,7 +82,7 @@ class DashScopeGenerationGateway(GenerationGatewayPort):
             # 客户端构造一次：连接池跨查询复用，避免每题支付建连成本
             self._client = OpenAI(
                 api_key=api_key,
-                base_url=_COMPAT_BASE_URL,
+                base_url=base_url,
                 max_retries=0,
             )
             self._invoke = self._invoke_client
@@ -119,18 +127,20 @@ class DashScopeGenerationGateway(GenerationGatewayPort):
     ) -> Any:
         """SDK 客户端的默认调用绑定（测试注入替身替换）
 
-        关闭思考：引用问答场景思考增量会占用输出预算并拖慢首 token，
-        作为冻结口径随配置行登记。
+        思考开关为 None 时不携带 extra_body：本地兼容端点普遍不识别
+        该字段，多带字段会被判为无效请求。
         """
-        return self._client.chat.completions.create(
-            model=model,
-            messages=cast("list[ChatCompletionMessageParam]", messages),
-            max_tokens=max_tokens,
-            timeout=request_timeout,
-            stream=True,
-            stream_options={"include_usage": True},
-            extra_body={"enable_thinking": False},
-        )
+        options: dict[str, Any] = {
+            "model": model,
+            "messages": cast("list[ChatCompletionMessageParam]", messages),
+            "max_tokens": max_tokens,
+            "timeout": request_timeout,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if self._enable_thinking is not None:
+            options["extra_body"] = {"enable_thinking": self._enable_thinking}
+        return self._client.chat.completions.create(**options)
 
     def _iterate(self, response_stream: Any) -> Iterator[str]:
         """逐段产出增量文本并校验响应结构（末次用量随流捕获）"""
