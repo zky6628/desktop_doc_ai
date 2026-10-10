@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "prepared_on": "2026-10-02",
+  "provenance": "Curated summary of existing local evaluation artifacts; no new evaluation executed",
+  "sample": {"documents": 5, "questions": 115},
+  "baseline": {"date": "2026-09-23", "completed": 115, "document_recall_at_5": 1.0, "document_mrr_at_10": 0.9174, "document_ndcg_at_10": 0.939, "retrieval_p95_ms": 16, "rerank_p95_ms": 219, "server_ttft_p95_ms": 1460},
+  "keyword_update": {"date": "2026-09-27", "completed": 115, "document_recall_at_5": 1.0, "document_mrr_at_10": 0.9174, "document_ndcg_at_10": 0.939, "retrieval_p95_ms": 16, "rerank_p95_ms": 235, "server_ttft_p95_ms": 1551, "chunk_recall_at_5": 0.9901, "chunk_recall_at_20": 1.0, "keyword_rank_nonempty_candidates": 1808, "total_candidates": 2300},
+  "fixed_pool_comparison": {"independent_recall_ablation": false, "without_keyword_chunk_recall_at_5": 0.9858, "without_keyword_document_mrr_at_10": 0.9043, "without_keyword_document_ndcg_at_10": 0.9294},
+  "baseline_refusal": {"questions": 20, "verbal_refusals": 19, "structural_refusals": 0, "rerun_after_keyword_update": false},
+  "limitations": ["Small dataset; document-level Recall@5 is saturated", "Automated document labels with content review; chunk references are not independent human labels", "Warm connections and query embedding cache; retrieval timing excludes other stages", "Client click-to-first-render latency unavailable", "Raw dataset and per-question outputs excluded from first public release"]
+}
